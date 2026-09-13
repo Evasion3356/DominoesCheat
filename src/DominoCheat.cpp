@@ -401,14 +401,112 @@
 	tiles, not WHERE), and any preference ordering beyond "legal or not"
 	(func_352/353's own bonus/high-pip heuristics were read but not
 	ported).
+
+	Session 8 (2026-09-13, release-prep pass) -- four presentation
+	changes, NONE of which touch a struct offset, so none of them affect
+	the confidence ratings above; all NEW code in this pass is itself
+	NOT yet live-tested (positions in particular are placeholder guesses,
+	flagged individually below), same "implemented, not yet confirmed"
+	status DetermineBestMove()/DetermineOpenEnds() already carried into
+	this session:
+	  1. Font: DrawLine()'s plain UI::DRAW_TEXT/SET_TEXT_COLOR_RGBA are
+	     nullsub on this game build (1491.50) -- the exact same finding
+	     Poker/BlackjackCheat already made and documented in their own
+	     ExtraNatives.h/DrawFontTest() header comments, just never
+	     ported into this file until now (its own ExtraNatives.h has
+	     carried the working UIDEBUG::_BG_DISPLAY_TEXT/_BG_SET_TEXT_COLOR
+	     pair, unused, since the project was first scaffolded). Every
+	     NEW draw call below goes through BgText()/DrawBgText(), the
+	     $Font5 rich-text pipeline -- DrawLine() itself is now
+	     Debug-only (see DrawOverlay()), backing only the raw diagnostic
+	     panel, which never needed a real font.
+	  2. Opponent hands: previously one line per seat inside that same
+	     Debug-only-in-spirit (but not actually Debug-gated) raw panel,
+	     stacked in a fixed corner keyed by raw seat index -- a live user
+	     report called that "nonsense" once actually seen on screen (it
+	     bears no relation to where opponents actually sit). Revised same
+	     day: DrawOpponentHandStatus() instead places one row per occupied
+	     OPPONENT seat (never your own) using ComputeDenseRowForSeat(),
+	     the exact dense-relative-seat-offset technique PokerCheat's own
+	     DrawSeatCardIcons() uses to sit "next to" each opponent's
+	     on-screen name/stack panel -- see that function's own header
+	     comment for the full mechanism and for why this is NOT
+	     independently confirmed to rotate the same way for dominoes_sp's
+	     4-seat table. Screen position (Config's OpponentHandBaseX/Y/
+	     StepY) is copied from PokerCheat's own PRE-calibration starting
+	     numbers, not this mod's own derived values -- this mod has never
+	     run a DrawCalibrationGrid()-style pass the way PokerCheat's
+	     final numbers were reached. Revised AGAIN the same day, per a
+	     further user request/finding: the per-tile TEXT (FormatTile()'s
+	     "[low|high]") is now real 2D tile-face icons instead, via
+	     GRAPHICS::DRAW_SPRITE against the game's own "dominos_set_N"
+	     texture dictionary -- the exact asset family PokerCheat's own
+	     card_set_N icons use, CONFIRMED to exist for dominoes via two
+	     independent sources: dominoes_sp.ysc.c's own func_267 (builds
+	     "dominos_set_"+N) and func_862 (builds "DOMINO_<low>_<high>"
+	     per-tile texture names, matching DominoHandEval::DecodeTile()'s
+	     own numbering exactly), AND the user's own read of the game's
+	     `ui_minigames.txt` asset manifest listing "dominos_set_1"
+	     through "dominos_set_6" alongside poker's "card_set_1..9". See
+	     BuildDominoTileTextureName()/FindLoadedDominoSetDict()'s own
+	     header comments for the full citation trail. Icon size/spacing
+	     (Config's OpponentTileIcon*) were ALSO copied from PokerCheat's
+	     own numbers at first -- CONFIRMED LIVE the same day, user-tuned
+	     via Reload Config against a real table (Width/Height=0.015/0.045,
+	     SpacingX=0.015, LabelOffsetX=0.035 -- notably smaller/narrower
+	     than poker's portrait-card starting guess, confirming a domino
+	     tile face really is a different shape). Also added
+	     WorldMarkerOffsetX/Y/FontSize to Config -- a live user report
+	     found DrawWorldMarkerOnTile()'s original hardcoded -0.06f/0
+	     nudge sitting over the tile's LEFT side rather than centering
+	     the "PLAY THIS ONE"/"WINNING MOVE" text. CONFIRMED LIVE the same
+	     day: -0.03f/0 (OffsetX halved, OffsetY unchanged) centers it
+	     correctly -- FontSize (26) is still an untouched placeholder.
+	     Also CONFIRMED LIVE the same day: the advice/marker were showing
+	     during every sub-state of mySeat's own turn, not just the real
+	     decision window -- gated on turnSubState==4 now (see the
+	     DrawOverlay() call site's own updated comment, which supersedes
+	     kTurnSubStateFieldOffset's original "4/5 both mean committing"
+	     guess). Also split into two independent Config toggles (user
+	     request, same day) -- ShowAdvice (the centered headline/safety
+	     readout) and ShowPlayableDomino (the "PLAY THIS ONE"/"WINNING MOVE"
+	     3D-tile text), previously always-on together with no way to
+	     show one without the other. DetermineBestMove() itself is now
+	     also skipped entirely when both are off, not just its two
+	     draw calls -- no reason to pay for the native calls it makes if
+	     nothing is going to render.
+	  3. Thought-engine articulation: DetermineBestMove()'s result used
+	     to only ever surface as one line inside the raw panel.
+	     DrawMoveAdviceStatus()/DrawMoveSafetyStatus() add a standalone,
+	     centered, real-font readout (same screen slot Poker's
+	     DrawWinPredictionStatus()/Blackjack's DrawAdviceStatus() use)
+	     showing the recommended tile plus a SAFE/RISKY/VERY RISKY
+	     qualifier derived from opponentRespondCount. That qualifier is
+	     deliberately SUPPRESSED whenever the boneyard still has undrawn
+	     tiles (exactBlockingKnown in DrawOverlay()) -- CountPipAcrossOpponents()'s
+	     own header comment is explicit its count is only an EXACT
+	     blocking measure in a full, boneyard-empty 4-seat game; showing
+	     a confident-looking safety label when tiles remain hidden in
+	     the boneyard would overclaim exactly the kind of thing this
+	     project's confidence-rating discipline otherwise never does.
+	     DrawWorldMarkerOnTile()'s "PLAY THIS ONE"/"WINNING MOVE" text
+	     also switched to the same real-font pipeline (localized).
+	  4. Localization.h/.cpp (new files, ported from Poker/BlackjackCheat's
+	     own) cover every string the three items above draw -- auto-
+	     detected from LANGUAGE::_GET_CURRENT_LANGUAGE_ID(), overridable
+	     via DominoCheat.ini's [General] Language key. Tile notation
+	     itself ("[3|5]") stays language-agnostic digits, same as the
+	     other two mods' own numeric HUD content.
 */
 
 #include "DominoCheat.h"
 #include "DominoHandEval.h"
+#include "DominoSearch.h"
 #include "Log.h"
 #include "GamePointers.h"
 #include "ScriptLocal.h"
 #include "Config.h"
+#include "Localization.h"
 #include "script.h"
 
 #include <string>
@@ -416,6 +514,7 @@
 #include <cstdint>
 #include <array>
 #include <cstring>
+#include <vector>
 
 namespace DominoCheat
 {
@@ -916,6 +1015,83 @@ namespace DominoCheat
 			return oss.str();
 		}
 
+		// Real 2D tile-face texture, same asset family PokerCheat's own
+		// card_set_N/BuildCardTextureName() use, replacing the plain
+		// FormatTile() text this file used to draw for opponent hands
+		// (per user request/finding, 2026-09-13). Dictionary name
+		// CONFIRMED via two independent sources: dominoes_sp.ysc.c's own
+		// func_267 (line ~12793) builds it exactly as `"dominos_set_" +
+		// (N+1)` (case 1 of a switch shared with poker/blackjack's own
+		// `"card_set_" + (N+1)`, case 0/2 -- same function, same pattern,
+		// different literal), written into a
+		// "gameTokenSetTextureDictionary" DATABINDING string that drives
+		// the game's own Scaleform hand-tile display; AND the user found
+		// "dominos_set_1".."dominos_set_6" listed directly in the game's
+		// own `ui_minigames.txt` asset manifest, alongside poker's
+		// "card_set_1".."card_set_9" (a 9th poker skin exists with no
+		// domino equivalent, so this file's own probe range should stop
+		// at 6, not 8 -- see kDominoSetProbeHi below). Per-tile texture
+		// NAME is `"DOMINO_" + low + "_" + high` (e.g. "DOMINO_5_6") --
+		// CONFIRMED directly from dominoes_sp.ysc.c's func_862 (line
+		// ~29683), a raw-tile-index-to-string switch statement whose 28
+		// cases exactly match DominoHandEval::DecodeTile()'s own
+		// triangular index<->{low,high} numbering (case 0="DOMINO_0_0",
+		// case 1="DOMINO_0_1", ... case 27="DOMINO_6_6") -- so this
+		// builds the string directly from a Tile's own low/high fields
+		// rather than re-deriving func_862's switch, same simplification
+		// PokerCheat's own BuildCardTextureName() makes relative to
+		// poker_sp.ysc.c's own switch-based equivalent. func_863 (line
+		// ~29807) then writes that name into the SAME per-slot
+		// DATABINDING string func_270 (line ~12879) created empty as
+		// `"textureName"` on a `"single_game_token"` UI item -- i.e. this
+		// IS the exact same reveal panel the user observed showing
+		// opponent tiles in 2D at round end, not a guessed-at lookalike
+		// asset. NOT yet independently confirmed by actually seeing this
+		// mod's own GRAPHICS::DRAW_SPRITE calls render a correct tile on
+		// screen (the dictionary/name STRINGS are confirmed from the
+		// decompile + asset manifest; GRAPHICS::DRAW_SPRITE itself is
+		// unconfirmed for dominoes specifically, though it's the exact
+		// same native Poker/BlackjackCheat already use successfully for
+		// their own card_set_N icons on this build).
+		std::string BuildDominoTileTextureName(const DominoHandEval::Tile& tile)
+		{
+			std::ostringstream oss;
+			oss << "DOMINO_" << tile.low << "_" << tile.high;
+			return oss.str();
+		}
+
+		// Same "probe which skin's dict the game already has streamed"
+		// technique as PokerCheat's own FindLoadedCardSetDict() -- avoids
+		// replicating dominoes_sp.ysc.c's own func_330/func_331-style
+		// table/location-skin lookup (not traced here) by just asking
+		// which dominos_set_N is ALREADY loaded, since the game itself
+		// must have one streamed in to be showing its own tiles right
+		// now. kDominoSetProbeHi is 6, not 8 like Poker's card_set probe
+		// range -- the user's own ui_minigames.txt read found exactly
+		// "dominos_set_1".."dominos_set_6" (poker's own manifest entry
+		// goes to card_set_9, one skin further, with no domino
+		// equivalent). Falls back to requesting dominos_set_1 if none
+		// are found loaded yet (e.g. called before the table has
+		// finished setting up) -- same fallback PokerCheat's own version
+		// uses.
+		constexpr int kDominoSetProbeLo = 1;
+		constexpr int kDominoSetProbeHi = 6;
+
+		bool FindLoadedDominoSetDict(std::string& outDict)
+		{
+			for (int n = kDominoSetProbeLo; n <= kDominoSetProbeHi; n++)
+			{
+				std::string candidate = "dominos_set_" + std::to_string(n);
+				if (TEXTURE::HAS_STREAMED_TEXTURE_DICT_LOADED(const_cast<char*>(candidate.c_str())))
+				{
+					outDict = candidate;
+					return true;
+				}
+			}
+
+			return false;
+		}
+
 		// Counts how many tiles across every OTHER occupied seat contain
 		// `pip` (a tile with pip on both sides, i.e. a double, still
 		// counts once) -- a direct blocking-strength measure ONLY because
@@ -966,74 +1142,41 @@ namespace DominoCheat
 			bool isWinningMove = false;
 		};
 
-		// Combines FindPlayableTiles() (CONFIRMED LIVE) and
-		// DetermineOpenEnds() (NOT yet live-tested) with pure local logic
-		// -- no new native calls -- to recommend a move: an immediate WIN
-		// (playing your last tile) always wins outright and is returned
-		// the instant one is found; otherwise, among every (legal tile,
-		// matching open end) pair, picks the one whose resulting NEW open
-		// end the fewest opponent tiles can answer
-		// (CountPipAcrossOpponents(), see that function's own header
-		// comment for why this is an exact blocking measure specifically
-		// because every session so far has been a full, boneyard-empty
-		// 4-player game), tie-broken by the tile's own pip total (highest
-		// first, matching the real game's own func_353 fallback
-		// heuristic, dominoes_sp.ysc.c line ~14800). NOT yet live-tested.
-		MoveRecommendation DetermineBestMove(rage::scrThread* thread, std::uint32_t mySeatU)
+		// Legal-move generation shared by both DetermineBestMove() paths
+		// below: a hand tile is legal wherever it matches one of the
+		// given open pip values -- exactly the rule DominoSearch.h's own
+		// LegalMoves() uses internally, and exactly what
+		// MINIGAME::_FIND_PLAYABLE_HAND_TILES was answering all along
+		// (that native is textbook dominoes legality, not hidden game-
+		// specific logic) -- so once DetermineOpenEnds() has told us
+		// which pips are open, the native query FindPlayableTiles() adds
+		// nothing here and is no longer called from DetermineBestMove()
+		// (still used elsewhere: the HUD's own "*" marker on playable
+		// tiles, and ProbeLegalMoves()). `endsToTry`/synthetic 0-6 range
+		// covers the one real edge case DetermineOpenEnds() can't
+		// resolve -- the very first move of a round, before anything's
+		// been played, where endCount comes back 0 because nothing is
+		// open yet rather than because a small hand couldn't be fully
+		// tested.
+		struct CandidateMove
 		{
-			MoveRecommendation best;
-			std::int32_t mySeat = static_cast<std::int32_t>(mySeatU);
+			std::int32_t handIndex;
+			DominoHandEval::Tile tile;
+			std::int32_t endPip;
+			std::int32_t resultPip;
+		};
 
-			std::array<std::int32_t, kCandidateCapacity> legal{};
-			std::uint32_t legalCount = FindPlayableTiles(thread, mySeatU, legal.data(), static_cast<std::uint32_t>(legal.size()));
-			if (legalCount == 0)
-				return best;
+		std::vector<CandidateMove> LocalLegalMoves(rage::scrThread* thread, std::uint32_t mySeatU, const std::int32_t* ends, std::uint32_t endCount, std::int32_t myHandCount)
+		{
+			std::vector<CandidateMove> moves;
+			std::uint32_t endsToTry = (endCount > 0) ? endCount : 7;
 
-			std::array<std::int32_t, 7> ends{};
-			std::uint32_t endCount = DetermineOpenEnds(thread, mySeatU, ends.data(), static_cast<std::uint32_t>(ends.size()));
-
-			std::int32_t myHandCount = SeatLocal(thread, mySeatU).At(kSeatHandCountOffset).AsInt32();
-
-			std::int32_t bestScore = -1;
-			std::int32_t bestPipTotalTiebreak = -1;
-
-			for (std::uint32_t li = 0; li < legalCount; li++)
+			for (std::int32_t handIndex = 0; handIndex < myHandCount; handIndex++)
 			{
-				std::int32_t handIndex = legal[li];
-				if (handIndex < 0 || handIndex >= myHandCount)
-					continue;
-
 				DominoHandEval::Tile tile = ReadHandTile(thread, mySeatU, static_cast<std::uint32_t>(handIndex));
 				if (!tile.IsValid())
 					continue;
 
-				if (myHandCount == 1)
-				{
-					// Playing your only remaining tile wins the round
-					// outright -- nothing about blocking matters once
-					// your hand is empty, so stop searching immediately.
-					best.valid = true;
-					best.handIndex = handIndex;
-					best.tile = tile;
-					best.isWinningMove = true;
-					for (std::uint32_t ei = 0; ei < endCount; ei++)
-					{
-						if (tile.low == ends[ei] || tile.high == ends[ei])
-						{
-							best.endPip = ends[ei];
-							best.resultPip = (tile.low == ends[ei]) ? tile.high : tile.low;
-							break;
-						}
-					}
-					return best;
-				}
-
-				// endCount==0 only happens if DetermineOpenEnds()
-				// couldn't test all 7 pips (a hand with fewer than 7
-				// tiles) and genuinely found none among what it could
-				// test -- fall back to trying every pip 0-6 directly
-				// rather than giving up on a recommendation entirely.
-				std::uint32_t endsToTry = (endCount > 0) ? endCount : 7;
 				for (std::uint32_t ei = 0; ei < endsToTry; ei++)
 				{
 					std::int32_t endPip = (endCount > 0) ? ends[ei] : static_cast<std::int32_t>(ei);
@@ -1041,8 +1184,70 @@ namespace DominoCheat
 						continue;
 
 					std::int32_t resultPip = (tile.low == endPip) ? tile.high : tile.low;
-					std::int32_t score = CountPipAcrossOpponents(thread, mySeat, resultPip);
-					std::int32_t pipTotal = tile.PipTotal();
+					moves.push_back(CandidateMove{ handIndex, tile, endPip, resultPip });
+				}
+			}
+			return moves;
+		}
+
+		// Depth-limited paranoid minimax (DominoSearch.h) over every
+		// seat's REAL hand -- see that header's own file comment for the
+		// full rationale. Only sound when nothing is hidden: all 4 seats
+		// dealt and the boneyard empty (`allHandsKnown` below, the same
+		// scope CountPipAcrossOpponents()'s own header comment already
+		// draws for its exact-blocking-measure claim). Falls back to the
+		// ORIGINAL 1-ply "minimize immediate opponent replies" heuristic
+		// whenever that doesn't hold (a real boneyard means opponents can
+		// draw their way back into the game in ways this file doesn't
+		// model, see DominoSearch.h's own scope notes) or when
+		// endCount==0 (the opening move of a round, where "look ahead at
+		// the board" is moot -- nothing has constrained anything yet).
+		// NOT yet live-tested (2026-09-13) -- replaces a 1-ply heuristic
+		// that WAS live-tested and confirmed to recommend only legal
+		// moves while still losing more than expected, i.e. legal-but-
+		// shallow, not buggy.
+		MoveRecommendation DetermineBestMove(rage::scrThread* thread, std::uint32_t mySeatU)
+		{
+			MoveRecommendation best;
+			std::int32_t mySeat = static_cast<std::int32_t>(mySeatU);
+
+			std::int32_t myHandCount = SeatLocal(thread, mySeatU).At(kSeatHandCountOffset).AsInt32();
+			if (myHandCount <= 0)
+				return best;
+
+			std::array<std::int32_t, 7> ends{};
+			std::uint32_t endCount = DetermineOpenEnds(thread, mySeatU, ends.data(), static_cast<std::uint32_t>(ends.size()));
+
+			std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
+			bool allHandsKnown = (deckCursor >= static_cast<std::int32_t>(kTileSetSize));
+
+			if (!allHandsKnown || endCount == 0)
+			{
+				std::vector<CandidateMove> moves = LocalLegalMoves(thread, mySeatU, ends.data(), endCount, myHandCount);
+				if (moves.empty())
+					return best;
+
+				if (myHandCount == 1)
+				{
+					// Playing your only remaining tile wins the round
+					// outright -- nothing about blocking matters once
+					// your hand is empty.
+					const CandidateMove& mv = moves.front();
+					best.valid = true;
+					best.handIndex = mv.handIndex;
+					best.tile = mv.tile;
+					best.endPip = mv.endPip;
+					best.resultPip = mv.resultPip;
+					best.isWinningMove = true;
+					return best;
+				}
+
+				std::int32_t bestScore = -1;
+				std::int32_t bestPipTotalTiebreak = -1;
+				for (const CandidateMove& mv : moves)
+				{
+					std::int32_t score = CountPipAcrossOpponents(thread, mySeat, mv.resultPip);
+					std::int32_t pipTotal = mv.tile.PipTotal();
 
 					bool better = (bestScore < 0) || (score < bestScore) || (score == bestScore && pipTotal > bestPipTotalTiebreak);
 					if (better)
@@ -1050,17 +1255,102 @@ namespace DominoCheat
 						bestScore = score;
 						bestPipTotalTiebreak = pipTotal;
 						best.valid = true;
-						best.handIndex = handIndex;
-						best.tile = tile;
-						best.endPip = endPip;
-						best.resultPip = resultPip;
+						best.handIndex = mv.handIndex;
+						best.tile = mv.tile;
+						best.endPip = mv.endPip;
+						best.resultPip = mv.resultPip;
 						best.opponentRespondCount = score;
 						best.isWinningMove = false;
 					}
 				}
+				return best;
 			}
 
+			// Full-information path: build the pure-logic search state
+			// from live-read hands and hand off to DominoSearch.h.
+			DominoSearch::GameState state;
+			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+			{
+				ScriptLocal seatLocal = SeatLocal(thread, seat);
+				std::int32_t occupancyMarker = seatLocal.At(kSeatOccupancyOffset).AsInt32();
+				if (occupancyMarker != static_cast<std::int32_t>(seat))
+					continue;
+
+				state.occupied[seat] = true;
+				std::int32_t handCount = seatLocal.At(kSeatHandCountOffset).AsInt32();
+				if (handCount < 0)
+					handCount = 0;
+				if (handCount > static_cast<std::int32_t>(kMaxHandCapacity))
+					handCount = static_cast<std::int32_t>(kMaxHandCapacity);
+
+				for (std::int32_t i = 0; i < handCount; i++)
+				{
+					DominoHandEval::Tile tile = ReadHandTile(thread, seat, static_cast<std::uint32_t>(i));
+					if (tile.IsValid())
+						state.hands[seat].push_back(tile);
+				}
+			}
+			for (std::uint32_t ei = 0; ei < endCount; ei++)
+				state.ends.pips.push_back(ends[ei]);
+			state.turnSeat = mySeat;
+
+			// 8 plies ~= two full round-robins in a 4-seat game --
+			// chosen as a starting budget balancing look-ahead depth
+			// against alpha-beta node count for typical mid-round hand
+			// sizes (3-7 legal-move branching); worth raising once
+			// endgame hands are small (fewer legal replies per ply makes
+			// deeper search cheap exactly when it matters most). NOT
+			// tuned against real frame-time yet.
+			constexpr int kMaxSearchDepth = 8;
+			DominoSearch::Recommendation rec = DominoSearch::FindBestMove(state, mySeat, kMaxSearchDepth);
+			if (!rec.valid)
+				return best;
+
+			best.valid = true;
+			best.handIndex = static_cast<std::int32_t>(rec.handIndex);
+			best.tile = rec.tile;
+			best.endPip = rec.endPip;
+			best.resultPip = rec.resultPip;
+			best.isWinningMove = rec.isWinningMove;
+			// Recomputed for display only -- DrawMoveSafetyStatus()'s
+			// SAFE/RISKY/VERY RISKY qualifier is keyed on "opponent
+			// tiles that can answer the resulting end", a distinct,
+			// already-understood metric from the minimax score itself.
+			best.opponentRespondCount = rec.isWinningMove ? 0 : CountPipAcrossOpponents(thread, mySeat, rec.resultPip);
 			return best;
+		}
+
+		// Wraps `text` in the Scaleform rich-text tags needed to actually
+		// render through the UIDEBUG::_BG_DISPLAY_TEXT pipeline --
+		// UI::DRAW_TEXT/SET_TEXT_COLOR_RGBA (what DrawLine() below still
+		// uses) are nullsub on this game build (1491.50), the same
+		// finding Poker/BlackjackCheat already made and documented in
+		// their own ExtraNatives.h/DrawFontTest() header comments --
+		// $Font5 is the confirmed working replacement. Ported from
+		// BlackjackCheat's identical WrapBgFormatText(). Every Release-
+		// facing draw call added this session (DrawSeatHandStatus(),
+		// DrawBoneyardStatus(), DrawMoveAdviceStatus(),
+		// DrawMoveSafetyStatus(), DrawWorldMarkerOnTile()) goes through
+		// this, via DrawBgText() below -- DrawLine()'s own pipeline stays
+		// exactly as it was, now Debug-only (see DrawOverlay()).
+		std::string BgText(const std::string& text, int fontSize)
+		{
+			std::ostringstream oss;
+			oss << "<TEXTFORMAT RIGHTMARGIN='0'><P ALIGN='Left'><FONT FACE='$Font5' LETTERSPACING='0' SIZE='"
+				<< fontSize << "'>~s~" << text << "</FONT></P><TEXTFORMAT>";
+			return oss.str();
+		}
+
+		// Thin call-site wrapper around BgText() + the
+		// UIDEBUG::_BG_SET_TEXT_COLOR/_BG_DISPLAY_TEXT pair -- every
+		// real-font draw call below uses this instead of repeating the
+		// three-line pattern Poker/BlackjackCheat's own call sites each
+		// inline separately.
+		void DrawBgText(const std::string& text, float x, float y, int fontSize, int r, int g, int b, int a = 255)
+		{
+			std::string formatText = BgText(text, fontSize);
+			UIDEBUG::_BG_SET_TEXT_COLOR(r, g, b, a);
+			UIDEBUG::_BG_DISPLAY_TEXT(GAMEPLAY::CREATE_STRING(10, const_cast<char*>("LITERAL_STRING"), const_cast<char*>(formatText.c_str())), x, y);
 		}
 
 #ifndef _DEBUG
@@ -1070,6 +1360,12 @@ namespace DominoCheat
 		constexpr float kTitleTextScale = 0.38f;
 #endif
 
+		// Backs ONLY the raw Debug diagnostic panel now (see
+		// DrawOverlay()) -- UI::DRAW_TEXT/SET_TEXT_COLOR_RGBA are nullsub
+		// in Release on this game build anyway (see BgText()'s own
+		// header comment), so this was never a real Release HUD to begin
+		// with; every user-facing element added this session uses
+		// DrawBgText() instead.
 		void DrawLine(float x, float y, const char* text, bool title = false)
 		{
 #ifdef _DEBUG
@@ -1084,6 +1380,12 @@ namespace DominoCheat
 			UI::SET_TEXT_DROPSHADOW(1, 0, 0, 0, 200);
 			UI::DRAW_TEXT(GAMEPLAY::CREATE_STRING(10, const_cast<char*>("LITERAL_STRING"), const_cast<char*>(text)), x, y);
 		}
+
+#ifndef _DEBUG
+		constexpr float kReleaseWorldMarkerOffsetX = -0.06f;
+		constexpr float kReleaseWorldMarkerOffsetY = 0.0f;
+		constexpr int kReleaseWorldMarkerFontSize = 26;
+#endif
 
 		// Draws `text` directly over tile `rawTileIndex`'s real 3D prop
 		// (GetTilePropHandle(), see that function's own header comment)
@@ -1109,126 +1411,461 @@ namespace DominoCheat
 			if (!GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_COORD(coords.x, coords.y, coords.z, &screenX, &screenY))
 				return;
 
-			UI::SET_TEXT_SCALE(0.0f, 0.35f);
-			UI::SET_TEXT_COLOR_RGBA(255, 240, 120, 255);
-			UI::SET_TEXT_CENTRE(1);
-			UI::SET_TEXT_DROPSHADOW(1, 0, 0, 0, 220);
-			UI::DRAW_TEXT(GAMEPLAY::CREATE_STRING(10, const_cast<char*>("LITERAL_STRING"), const_cast<char*>(text)), screenX, screenY);
+			// UI::SET_TEXT_CENTRE/DRAW_TEXT (this function's original
+			// version) are nullsub on this game build -- switched to the
+			// BgText()/DrawBgText() pipeline (see that function's own
+			// header comment). That pipeline has no SET_TEXT_CENTRE
+			// equivalent (PokerCheat.cpp's DrawSeatCardIcons() header
+			// comment notes the same gap for $Font5 text), so this is
+			// left-aligned from screenX rather than centered on it --
+			// nudged by a configurable offset as a rough approximation
+			// instead. A live user report (2026-09-13) found the
+			// original hardcoded -0.06f nudge sat over the tile's LEFT
+			// side instead of centering the text -- WorldMarkerOffsetX/Y
+			// (Debug-tunable via Config, Release bakes the same starting
+			// numbers) let this be adjusted live via F12 -> Reload Config
+			// instead of a recompile per guess. The coordinate math
+			// itself (GetTilePropHandle()/GET_SCREEN_COORD_FROM_WORLD_COORD)
+			// is unchanged and already CONFIRMED LIVE (see this file's
+			// header comment) -- only the offset/pipeline is still being
+			// tuned.
+			const Config::Values& cfg = Config::Get();
+#ifdef _DEBUG
+			float offsetX = cfg.WorldMarkerOffsetX;
+			float offsetY = cfg.WorldMarkerOffsetY;
+			int fontSize = static_cast<int>(cfg.WorldMarkerFontSize);
+#else
+			float offsetX = kReleaseWorldMarkerOffsetX;
+			float offsetY = kReleaseWorldMarkerOffsetY;
+			int fontSize = kReleaseWorldMarkerFontSize;
+#endif
+			DrawBgText(text, screenX + offsetX, screenY + offsetY, fontSize, 255, 240, 120);
 		}
 
-		// Draws every occupied seat's hand plus the undrawn boneyard, as
-		// plain debug text. Your own seat (FindMySeatByPed(), see file
-		// header comment's "My seat" section) is always shown regardless
-		// of ShowOpponentHands and marked "(you)" -- showing your own
-		// already-visible hand isn't the cheat, hiding opponents' is. Also
-		// shows whose turn it currently is (kCurrentTurnSeatFieldOffset,
-		// CONFIRMED LIVE both via func_76/func_167's own read/write sites
-		// and visually against the real screen -- see that constant's own
-		// comment). No calibrated icon
-		// overlay yet (unlike PokerCheat/BlackjackCheat's own Release
-		// HUDs) -- this is a deliberate, temporary deviation from that
-		// convention: with zero live confirmation of ANY offset here,
-		// there's nothing to calibrate icon positions against yet, so
-		// this stays Release+Debug plain text until a live session
-		// confirms the struct layout enough to be worth the calibration
-		// pass (see docs/JOURNAL.md-equivalent notes once this project has
-		// one).
-		void DrawOverlay(rage::scrThread* thread)
+		// Maps each OPPONENT (non-you) seat to a DENSE row index (1, 2,
+		// 3... no gaps) -- ported from PokerCheat's own
+		// ComputeDenseRowForSeat() (see that function's header comment
+		// for the full rationale): the real vanilla per-seat UI panel
+		// COMPACTS, an empty/unoccupied seat doesn't leave a blank row,
+		// so DrawOpponentHandStatus()'s own calibrated per-row positions
+		// need to match that compacting instead of a fixed per-raw-seat-
+		// index slot. Walks seats in decreasing raw index from mySeat,
+		// wrapping mod kMaxSeats -- the SAME direction PokerCheat
+		// confirmed LIVE for its own 6-seat table (mySeat=5, then seat
+		// 4, 3, 2 going up the screen, i.e. the list counts DOWN from
+		// your own seat number as it goes up). NOT independently
+		// confirmed for dominoes_sp's 4-seat table -- this mod has never
+		// live-tested whether its table/camera rotates seats relative to
+		// you the same way poker_sp's does. Flagged explicitly: if a
+		// live session shows an opponent's tiles next to the WRONG
+		// avatar, this direction (or the whole "rotates relative to you"
+		// assumption itself) is the first thing to re-check. outDenseRow
+		// must have kMaxSeats entries; stays 0 for mySeat itself and for
+		// any unoccupied seat.
+		void ComputeDenseRowForSeat(rage::scrThread* thread, std::int32_t mySeat, int (&outDenseRow)[kMaxSeats])
 		{
-			const Config::Values& cfg = Config::Get();
+			for (std::uint32_t i = 0; i < kMaxSeats; i++)
+				outDenseRow[i] = 0;
 
-#ifdef _DEBUG
-			float x = cfg.PanelX;
-			float y = cfg.PanelY;
-			float lineHeight = 0.022f;
-#else
-			float x = kPanelX;
-			float y = kPanelY;
-			float lineHeight = 0.022f;
+			if (mySeat < 0 || mySeat >= static_cast<std::int32_t>(kMaxSeats))
+				return;
+
+			int nextRow = 1;
+			for (int rawOffset = 1; rawOffset < static_cast<int>(kMaxSeats); rawOffset++)
+			{
+				int otherSeat = (mySeat - rawOffset + static_cast<int>(kMaxSeats)) % static_cast<int>(kMaxSeats);
+				std::int32_t occupancyMarker = SeatLocal(thread, static_cast<std::uint32_t>(otherSeat)).At(kSeatOccupancyOffset).AsInt32();
+				if (occupancyMarker == otherSeat)
+				{
+					outDenseRow[otherSeat] = nextRow;
+					nextRow++;
+				}
+			}
+		}
+
+#ifndef _DEBUG
+		constexpr float kReleaseOpponentHandBaseX = 0.18f;
+		constexpr float kReleaseOpponentHandBaseY = 0.83f;
+		constexpr float kReleaseOpponentHandStepY = -0.0915f;
+		constexpr float kReleaseOpponentTileIconLabelOffsetX = 0.05f;
+		constexpr float kReleaseOpponentTileIconSpacingX = 0.022f;
+		constexpr float kReleaseOpponentTileIconWidth = 0.02f;
+		constexpr float kReleaseOpponentTileIconHeight = 0.045f;
+		constexpr float kReleaseBoneyardX = 0.02f;
+		constexpr float kReleaseBoneyardY = 0.30f;
 #endif
 
-			DrawLine(x, y, "DominoCheat", true);
-			y += lineHeight * 1.4f;
+		// Real 2D tile icons -- one row per occupied OPPONENT seat (NEVER
+		// your own -- you already see your own hand as real physical
+		// tiles, same reasoning PokerCheat's DrawSeatCardIcons() uses for
+		// opponent-only hole cards), each positioned via
+		// ComputeDenseRowForSeat() the same way PokerCheat's own icon
+		// strip sits "next to" each opponent's on-screen name/stack panel
+		// instead of a fixed corner list keyed by raw seat index (a live
+		// user report called the original absolute-seat-index TEXT
+		// version of this "nonsense" -- that version then got replaced
+		// with the dense-row TEXT version below, and THIS version
+		// replaces the tile TEXT itself with the game's own real
+		// "dominos_set_N"/"DOMINO_<low>_<high>" 2D tile-face sprites --
+		// see BuildDominoTileTextureName()/FindLoadedDominoSetDict()'s
+		// own header comments for the confirmation trail -- per a
+		// further user request/finding, 2026-09-13). Skips a row
+		// entirely when ShowOpponentHands is off, same as before. Drawn
+		// FROM RIGHT WHERE the streamed dict actually already is (see
+		// FindLoadedDominoSetDict()) -- if it isn't loaded yet, this
+		// requests it and draws NOTHING this tick (same as PokerCheat's
+		// own DrawSeatCardIcons(), not a text fallback -- the dict
+		// streams in within a frame or two of the table loading, so a
+		// tick or two of nothing here isn't worth a second code path).
+		//
+		// Screen position AND icon size/spacing: copied from PokerCheat's
+		// OWN pre-calibration starting numbers as a reasonable jumping-
+		// off point, NOT calibrated against dominoes_sp's own table/
+		// camera OR the real "DOMINO_a_b" sprite's own aspect ratio at
+		// all -- this mod has never run a DrawCalibrationGrid()-style
+		// pass, a 4-seat table's layout may not even resemble poker's
+		// 6-seat one, and a domino tile face is a different shape than a
+		// playing card (poker's own 0.02x0.045 width/height was tuned
+		// for a portrait-oriented card, not necessarily right for
+		// whatever aspect dominos_set_N's own tile sprites actually are).
+		// Debug builds retune live via Config's OpponentHandBaseX/Y/StepY
+		// + OpponentTileIcon*/Reload Config; Release bakes in the same
+		// placeholder numbers until a live session says otherwise.
+		void DrawOpponentHandStatus(rage::scrThread* thread, std::int32_t mySeat)
+		{
+			const Config::Values& cfg = Config::Get();
+			if (!cfg.ShowOpponentHands || mySeat < 0)
+				return;
 
-			std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
-			std::int32_t mySeat = FindMySeatByPed(thread);
-			std::int32_t turnSeat = RoundLocal(thread).At(kCurrentTurnSeatFieldOffset).AsInt32();
-			std::int32_t turnSubState = RoundLocal(thread).At(kTurnSubStateFieldOffset).AsInt32();
-
+			std::string dominoSetDict;
+			if (!FindLoadedDominoSetDict(dominoSetDict))
 			{
-				std::ostringstream turnLine;
-				turnLine << "Turn: seat " << turnSeat << (turnSeat == mySeat ? " (you)" : "") << ", state " << turnSubState;
-				DrawLine(x, y, turnLine.str().c_str());
-				y += lineHeight;
+				TEXTURE::REQUEST_STREAMED_TEXTURE_DICT(const_cast<char*>("dominos_set_1"), false);
+				return;
 			}
+
+#ifdef _DEBUG
+			float baseX = cfg.OpponentHandBaseX;
+			float baseY = cfg.OpponentHandBaseY;
+			float stepY = cfg.OpponentHandStepY;
+			float labelOffsetX = cfg.OpponentTileIconLabelOffsetX;
+			float iconSpacingX = cfg.OpponentTileIconSpacingX;
+			float iconWidth = cfg.OpponentTileIconWidth;
+			float iconHeight = cfg.OpponentTileIconHeight;
+#else
+			float baseX = kReleaseOpponentHandBaseX;
+			float baseY = kReleaseOpponentHandBaseY;
+			float stepY = kReleaseOpponentHandStepY;
+			float labelOffsetX = kReleaseOpponentTileIconLabelOffsetX;
+			float iconSpacingX = kReleaseOpponentTileIconSpacingX;
+			float iconWidth = kReleaseOpponentTileIconWidth;
+			float iconHeight = kReleaseOpponentTileIconHeight;
+#endif
+
+			int denseRow[kMaxSeats];
+			ComputeDenseRowForSeat(thread, mySeat, denseRow);
 
 			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
 			{
-				ScriptLocal seatLocal = SeatLocal(thread, seat);
-				std::int32_t occupancyMarker = seatLocal.At(kSeatOccupancyOffset).AsInt32();
-				if (occupancyMarker != static_cast<std::int32_t>(seat))
-					continue; // not dealt/occupied per kSeatOccupancyOffset's convention
+				if (denseRow[seat] == 0)
+					continue; // mySeat itself, or an unoccupied seat
 
-				bool isMySeat = (mySeat == static_cast<std::int32_t>(seat));
-
-				// Clamped to kMaxHandCapacity, NOT kHandSize -- a hand can
-				// grow past its initial 7 tiles via boneyard draws (see
-				// kMaxHandCapacity's own comment); clamping to 7 here would
-				// silently hide real tiles the moment a seat draws its
-				// first extra one.
-				std::int32_t handCount = seatLocal.At(kSeatHandCountOffset).AsInt32();
+				std::int32_t handCount = SeatLocal(thread, seat).At(kSeatHandCountOffset).AsInt32();
 				if (handCount < 0)
 					handCount = 0;
 				if (handCount > static_cast<std::int32_t>(kMaxHandCapacity))
 					handCount = static_cast<std::int32_t>(kMaxHandCapacity);
 
-				// For your own seat, mark which tiles the game itself
-				// currently considers playable (FindPlayableTiles(), see
-				// file header comment's "Session 4 addition" -- CONFIRMED
-				// LIVE against a real board with open ends 6 and 1).
-				std::array<std::int32_t, kCandidateCapacity> playable{};
-				std::uint32_t playableCount = 0;
-				if (isMySeat)
-					playableCount = FindPlayableTiles(thread, seat, playable.data(), static_cast<std::uint32_t>(playable.size()));
+				float y = baseY + static_cast<float>(denseRow[seat] - 1) * stepY;
 
-				std::ostringstream line;
-				line << "Seat " << seat << (isMySeat ? " (you, " : " (") << handCount << " tiles): ";
+				std::ostringstream label;
+				label << Localization::SeatWord() << " " << seat;
+				DrawBgText(label.str(), baseX, y, 20, 255, 210, 140);
+
+				float iconX = baseX + labelOffsetX;
 				for (std::int32_t i = 0; i < handCount; i++)
 				{
-					line << FormatTile(ReadHandTile(thread, seat, static_cast<std::uint32_t>(i)));
-					if (isMySeat && IsHandIndexPlayable(playable.data(), playableCount, i))
-						line << "*";
-					line << " ";
+					DominoHandEval::Tile tile = ReadHandTile(thread, seat, static_cast<std::uint32_t>(i));
+					if (!tile.IsValid())
+						continue;
+
+					std::string textureName = BuildDominoTileTextureName(tile);
+					GRAPHICS::DRAW_SPRITE(const_cast<char*>(dominoSetDict.c_str()), const_cast<char*>(textureName.c_str()), iconX, y, iconWidth, iconHeight, 0.0f, 255, 255, 255, 255, 0);
+					iconX += iconSpacingX;
 				}
-				if (isMySeat)
-					line << (playableCount > 0 ? "  (* = playable now)" : "  (no playable tile found)");
+			}
+		}
 
-				if (!isMySeat && !cfg.ShowOpponentHands)
-					line.str("Seat " + std::to_string(seat) + " (hidden -- ShowOpponentHands off)");
+		// Real-font boneyard readout -- Release-facing equivalent of the
+		// raw panel's own boneyard line, same ShowBoneyardPrediction gate
+		// (see DrawOverlay()). Own fixed placeholder position (Config's
+		// BoneyardX/Y) rather than stacking below the opponent-hand list
+		// -- that list's rows now scatter to per-seat calibrated
+		// positions instead of a single top-to-bottom stack, so there's
+		// no longer a single "next free y" to continue from.
+		void DrawBoneyardStatus(rage::scrThread* thread)
+		{
+			std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
+			std::int32_t remaining = static_cast<std::int32_t>(kTileSetSize) - deckCursor;
+			if (remaining <= 0 || remaining > static_cast<std::int32_t>(kTileSetSize))
+				return;
 
-				DrawLine(x, y, line.str().c_str());
-				y += lineHeight;
+			const Config::Values& cfg = Config::Get();
+#ifdef _DEBUG
+			float x = cfg.BoneyardX;
+			float y = cfg.BoneyardY;
+#else
+			float x = kReleaseBoneyardX;
+			float y = kReleaseBoneyardY;
+#endif
 
-				// Best-move recommendation -- see DetermineBestMove()'s
-				// own header comment. Only shown when it's genuinely your
-				// turn (a live bug report showed this appearing during
-				// other turn sub-states, e.g. state 4, which isn't a
-				// state where acting on the advice makes sense). NOT yet
-				// live-tested.
-				if (isMySeat && turnSeat == static_cast<std::int32_t>(seat))
+			std::ostringstream line;
+			line << Localization::BoneyardWord() << " (" << remaining << "): ";
+			for (std::int32_t i = deckCursor; i < static_cast<std::int32_t>(kTileSetSize); i++)
+				line << FormatTile(ReadBoneyardTile(thread, i)) << " ";
+
+			DrawBgText(line.str(), x, y, 20, 200, 220, 255);
+		}
+
+#ifndef _DEBUG
+		constexpr float kReleaseMoveAdviceX = 0.48f;
+		constexpr float kReleaseMoveAdviceY = 0.5f;
+		constexpr float kReleaseMoveSafetyYOffset = 0.045f;
+#endif
+
+		// Standalone move-advice headline -- articulates
+		// DetermineBestMove()'s recommendation as a real-font, centered-
+		// ish readout instead of one line buried in the raw Debug panel.
+		// Same screen-center placeholder slot Poker's
+		// DrawWinPredictionStatus()/Blackjack's DrawAdviceStatus() start
+		// from (their own comments call this "a rough screen-center
+		// starting point... not calibrated against anything" -- same
+		// honesty applies here, doubly so since this mod has never run a
+		// calibration pass at all). Shown in both Debug and Release,
+		// gated by DrawOverlay() on it actually being mySeat's turn.
+		void DrawMoveAdviceStatus(const MoveRecommendation& rec)
+		{
+			const Config::Values& cfg = Config::Get();
+#ifdef _DEBUG
+			float x = cfg.MoveAdviceX;
+			float y = cfg.MoveAdviceY;
+#else
+			float x = kReleaseMoveAdviceX;
+			float y = kReleaseMoveAdviceY;
+#endif
+			const char* headline = rec.isWinningMove ? Localization::WinningMoveLabel() : Localization::BestMoveLabel();
+			int r = rec.isWinningMove ? 255 : 140, g = rec.isWinningMove ? 220 : 255, b = rec.isWinningMove ? 120 : 140;
+
+			std::ostringstream line;
+			line << headline << ": " << FormatTile(rec.tile);
+			if (!rec.isWinningMove)
+				line << " (" << rec.endPip << " -> " << rec.resultPip << ")";
+
+			DrawBgText(line.str(), x, y, 40, r, g, b);
+		}
+
+		// Blocking-safety qualifier, drawn just below DrawMoveAdviceStatus()
+		// -- same "second line, offset below the headline" convention
+		// BlackjackCheat's DrawBettingAdviceStatus() uses relative to
+		// DrawAdviceStatus(). Deliberately suppressed
+		// (exactBlockingKnown=false, passed in by DrawOverlay() based on
+		// whether the boneyard is empty) when the boneyard still has
+		// undrawn tiles -- CountPipAcrossOpponents()'s own header comment
+		// is explicit its count is only an EXACT blocking measure when
+		// every one of the 28 tiles is already visible across the 4
+		// hands (a full, boneyard-empty game); with tiles still in the
+		// boneyard, an opponent could draw into a response this count
+		// can't see, so a confident-looking SAFE/RISKY label there would
+		// overclaim exactly the kind of thing this project's confidence
+		// ratings are otherwise careful never to do.
+		void DrawMoveSafetyStatus(const MoveRecommendation& rec, bool exactBlockingKnown)
+		{
+			if (rec.isWinningMove || !exactBlockingKnown)
+				return;
+
+			const Config::Values& cfg = Config::Get();
+#ifdef _DEBUG
+			float x = cfg.MoveAdviceX;
+			float y = cfg.MoveAdviceY + 0.045f;
+#else
+			float x = kReleaseMoveAdviceX;
+			float y = kReleaseMoveAdviceY + kReleaseMoveSafetyYOffset;
+#endif
+
+			Localization::BlockingSafety safety = Localization::ClassifyBlockingSafety(rec.opponentRespondCount);
+			int r = 140, g = 255, b = 140;
+			switch (safety)
+			{
+				case Localization::BlockingSafety::Safe: r = 140; g = 255; b = 140; break;
+				case Localization::BlockingSafety::Risky: r = 255; g = 220; b = 140; break;
+				case Localization::BlockingSafety::VeryRisky: r = 255; g = 140; b = 140; break;
+			}
+
+			DrawBgText(Localization::BlockingSafetyLabel(safety), x, y, 28, r, g, b);
+		}
+
+		// Raw Debug diagnostic panel (title/turn/per-seat/boneyard, via
+		// DrawLine()'s plain UI::DRAW_TEXT pipeline) PLUS the real-font
+		// Release+Debug HUD (DrawSeatHandStatus()/DrawBoneyardStatus()/
+		// DrawMoveAdviceStatus()/DrawMoveSafetyStatus(), all added this
+		// session -- see this file's header comment's "Session 8" entry).
+		// The raw panel is now genuinely Debug-only (UI::DRAW_TEXT is
+		// nullsub in Release regardless, see BgText()'s own header
+		// comment, so it drew nothing there anyway) -- kept for exactly
+		// the reason Poker/BlackjackCheat keep their own DrawLine()/
+		// DrawPanel() panels Debug-only: a dev diagnostic surface every
+		// Probe* menu item's own live-confirmation work has been checked
+		// against.
+		void DrawOverlay(rage::scrThread* thread)
+		{
+#ifdef _DEBUG
+			// Raw diagnostic dump -- unchanged from before this session,
+			// still the thing every Probe* menu item's own live
+			// confirmation has been checked against. Never shown in
+			// Release (DrawLine()'s UI::DRAW_TEXT is nullsub there
+			// anyway, see BgText()'s own header comment).
+			{
+				const Config::Values& cfg = Config::Get();
+				float x = cfg.PanelX;
+				float y = cfg.PanelY;
+				float lineHeight = 0.022f;
+
+				DrawLine(x, y, "DominoCheat", true);
+				y += lineHeight * 1.4f;
+
+				std::int32_t debugMySeat = FindMySeatByPed(thread);
+				std::int32_t debugTurnSeat = RoundLocal(thread).At(kCurrentTurnSeatFieldOffset).AsInt32();
+				std::int32_t turnSubState = RoundLocal(thread).At(kTurnSubStateFieldOffset).AsInt32();
+
 				{
-					MoveRecommendation rec = DetermineBestMove(thread, seat);
-					if (rec.valid)
-					{
-						std::ostringstream recLine;
-						if (rec.isWinningMove)
-							recLine << "WINNING MOVE: play " << FormatTile(rec.tile) << " to empty your hand!";
-						else
-							recLine << "Best move: " << FormatTile(rec.tile) << " on end " << rec.endPip
-								<< " -> new end " << rec.resultPip << " (opponent tiles that answer: " << rec.opponentRespondCount << ")";
-						DrawLine(x, y, recLine.str().c_str());
-						y += lineHeight;
+					std::ostringstream turnLine;
+					turnLine << "Turn: seat " << debugTurnSeat << (debugTurnSeat == debugMySeat ? " (you)" : "") << ", state " << turnSubState;
+					DrawLine(x, y, turnLine.str().c_str());
+					y += lineHeight;
+				}
 
+				for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+				{
+					ScriptLocal seatLocal = SeatLocal(thread, seat);
+					std::int32_t occupancyMarker = seatLocal.At(kSeatOccupancyOffset).AsInt32();
+					if (occupancyMarker != static_cast<std::int32_t>(seat))
+						continue; // not dealt/occupied per kSeatOccupancyOffset's convention
+
+					bool isMySeat = (debugMySeat == static_cast<std::int32_t>(seat));
+
+					// Clamped to kMaxHandCapacity, NOT kHandSize -- a hand can
+					// grow past its initial 7 tiles via boneyard draws (see
+					// kMaxHandCapacity's own comment); clamping to 7 here would
+					// silently hide real tiles the moment a seat draws its
+					// first extra one.
+					std::int32_t handCount = seatLocal.At(kSeatHandCountOffset).AsInt32();
+					if (handCount < 0)
+						handCount = 0;
+					if (handCount > static_cast<std::int32_t>(kMaxHandCapacity))
+						handCount = static_cast<std::int32_t>(kMaxHandCapacity);
+
+					std::array<std::int32_t, kCandidateCapacity> playable{};
+					std::uint32_t playableCount = 0;
+					if (isMySeat)
+						playableCount = FindPlayableTiles(thread, seat, playable.data(), static_cast<std::uint32_t>(playable.size()));
+
+					std::ostringstream line;
+					line << "Seat " << seat << (isMySeat ? " (you, " : " (") << handCount << " tiles): ";
+					for (std::int32_t i = 0; i < handCount; i++)
+					{
+						line << FormatTile(ReadHandTile(thread, seat, static_cast<std::uint32_t>(i)));
+						if (isMySeat && IsHandIndexPlayable(playable.data(), playableCount, i))
+							line << "*";
+						line << " ";
+					}
+					if (isMySeat)
+						line << (playableCount > 0 ? "  (* = playable now)" : "  (no playable tile found)");
+
+					if (!isMySeat && !cfg.ShowOpponentHands)
+						line.str("Seat " + std::to_string(seat) + " (hidden -- ShowOpponentHands off)");
+
+					DrawLine(x, y, line.str().c_str());
+					y += lineHeight;
+
+					if (isMySeat && debugTurnSeat == static_cast<std::int32_t>(seat))
+					{
+						MoveRecommendation rec = DetermineBestMove(thread, seat);
+						if (rec.valid)
+						{
+							std::ostringstream recLine;
+							if (rec.isWinningMove)
+								recLine << "WINNING MOVE: play " << FormatTile(rec.tile) << " to empty your hand!";
+							else
+								recLine << "Best move: " << FormatTile(rec.tile) << " on end " << rec.endPip
+									<< " -> new end " << rec.resultPip << " (opponent tiles that answer: " << rec.opponentRespondCount << ")";
+							DrawLine(x, y, recLine.str().c_str());
+							y += lineHeight;
+						}
+					}
+				}
+
+				if (cfg.ShowBoneyardPrediction)
+				{
+					std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
+					std::int32_t remaining = static_cast<std::int32_t>(kTileSetSize) - deckCursor;
+					if (remaining > 0 && remaining <= static_cast<std::int32_t>(kTileSetSize))
+					{
+						std::ostringstream line;
+						line << "Boneyard (" << remaining << " left): ";
+						for (std::int32_t i = deckCursor; i < static_cast<std::int32_t>(kTileSetSize); i++)
+							line << FormatTile(ReadBoneyardTile(thread, i)) << " ";
+
+						DrawLine(x, y, line.str().c_str());
+						y += lineHeight;
+					}
+				}
+			}
+#endif
+
+			// Real-font HUD (Release+Debug) -- see this file's header
+			// comment's "Session 8" entry for what each piece is and why
+			// it's still flagged NOT yet live-tested.
+			const Config::Values& cfg = Config::Get();
+			std::int32_t mySeat = FindMySeatByPed(thread);
+			std::int32_t turnSeat = RoundLocal(thread).At(kCurrentTurnSeatFieldOffset).AsInt32();
+			std::int32_t turnSubState = RoundLocal(thread).At(kTurnSubStateFieldOffset).AsInt32();
+
+			DrawOpponentHandStatus(thread, mySeat);
+
+			if (cfg.ShowBoneyardPrediction)
+				DrawBoneyardStatus(thread);
+
+			// Best-move recommendation -- see DetermineBestMove()'s own
+			// header comment. CONFIRMED LIVE (2026-09-13, user report):
+			// the advice (and the "PLAY THIS ONE"/"WINNING MOVE" world
+			// marker) must only render during sub-state 4 of mySeat's
+			// own turn -- every OTHER sub-state (1/2/3/5/6, see
+			// kTurnSubStateFieldOffset's own header comment for what
+			// each was originally guessed to mean) showed it too under
+			// the old turnSeat==mySeat-only gate, which the user
+			// reported as wrong. This SUPERSEDES that field's own
+			// header-comment guess that sub-states 4/5 both mean
+			// "committing the chosen move" -- that reading was
+			// explicitly flagged there as an unconfirmed switch-
+			// structure guess, and this is the first live data point
+			// actually pinning one of these states down: state 4 is the
+			// real decision window, not a committing state.
+			if (mySeat >= 0 && turnSeat == mySeat && turnSubState == 4 && (cfg.ShowAdvice || cfg.ShowPlayableDomino))
+			{
+				MoveRecommendation rec = DetermineBestMove(thread, static_cast<std::uint32_t>(mySeat));
+				if (rec.valid)
+				{
+					if (cfg.ShowAdvice)
+					{
+						DrawMoveAdviceStatus(rec);
+
+						std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
+						bool exactBlockingKnown = (deckCursor >= static_cast<std::int32_t>(kTileSetSize));
+						DrawMoveSafetyStatus(rec, exactBlockingKnown);
+					}
+
+					if (cfg.ShowPlayableDomino)
+					{
 						// Mark the real, physical 3D tile itself -- see
 						// FindTilePropForTileValue()'s own header comment
 						// for the value-based (via .f_3, CONFIRMED LIVE)
@@ -1237,25 +1874,10 @@ namespace DominoCheat
 						// the drawn text land on the right physical tile
 						// is not).
 						std::int32_t rawTileValue = DominoHandEval::EncodeTile(rec.tile.low, rec.tile.high);
-						std::int32_t propSlot = FindTilePropForTileValue(thread, static_cast<std::int32_t>(seat), rawTileValue);
+						std::int32_t propSlot = FindTilePropForTileValue(thread, mySeat, rawTileValue);
 						if (propSlot >= 0)
-							DrawWorldMarkerOnTile(thread, propSlot, rec.isWinningMove ? "WINNING MOVE" : "PLAY THIS ONE");
+							DrawWorldMarkerOnTile(thread, propSlot, rec.isWinningMove ? Localization::WinningTileMarker() : Localization::PlayThisTileMarker());
 					}
-				}
-			}
-
-			if (cfg.ShowBoneyardPrediction)
-			{
-				std::int32_t remaining = static_cast<std::int32_t>(kTileSetSize) - deckCursor;
-				if (remaining > 0 && remaining <= static_cast<std::int32_t>(kTileSetSize))
-				{
-					std::ostringstream line;
-					line << "Boneyard (" << remaining << " left): ";
-					for (std::int32_t i = deckCursor; i < static_cast<std::int32_t>(kTileSetSize); i++)
-						line << FormatTile(ReadBoneyardTile(thread, i)) << " ";
-
-					DrawLine(x, y, line.str().c_str());
-					y += lineHeight;
 				}
 			}
 		}

@@ -10,7 +10,16 @@ was chosen.
 **Current status: hand/boneyard/seat chain, "my seat", and legal-move
 advice are all live-confirmed. A full blocking/win-the-round advisor and
 a real 3D world-space "PLAY THIS ONE" marker on the physical tile are
-implemented but NOT yet live-tested (2026-09-13).**
+implemented but NOT yet live-tested (2026-09-13). A same-day release-prep
+pass (Session 8 below) rebuilt the entire HUD on the same working
+`$Font5`/`UIDEBUG` font pipeline Poker/BlackjackCheat use, gave opponent
+hands their own real-font per-seat blocks, gave the blocking/win advisor
+a standalone articulated readout, and added full 13-language
+localization -- also NOT yet live-tested. A user report the same evening
+found the blocking/win advisor's recommendations were legal but still
+lost more than expected -- Session 9 below replaced its 1-ply heuristic
+with a depth-limited minimax over the fully-known hands; NOT yet
+live-tested.**
 `src/DominoCheat.cpp`'s file header comment documents every struct
 offset this mod reads, each with its own confidence rating. Sessions so
 far:
@@ -105,6 +114,101 @@ far:
    (11 items now, fits one page) by merging the now-fully-confirmed
    `ProbeTileProps` into `ProbeTilePropOwnership` and dropping
    `DumpLocalStackRange` (superseded by the JSONL dump).
+8. Release-prep pass (2026-09-13, same day) -- four presentation changes,
+   none touching a struct offset: (a) switched every Release-facing draw
+   call from `UI::DRAW_TEXT`/`SET_TEXT_COLOR_RGBA` (nullsub on this game
+   build, the same finding Poker/BlackjackCheat already documented) to
+   the `UIDEBUG::_BG_DISPLAY_TEXT`/`$Font5` pipeline via new
+   `BgText()`/`DrawBgText()` helpers; (b) replaced the single-panel
+   opponent-hand dump with a real-font, Release+Debug per-seat block;
+   (c) added a standalone move-advice readout
+   (`DrawMoveAdviceStatus()`/`DrawMoveSafetyStatus()`) that articulates
+   `DetermineBestMove()`'s recommendation plus a SAFE/RISKY/VERY RISKY
+   qualifier (suppressed whenever the boneyard isn't empty, since the
+   blocking count is only exact then); (d) added `Localization.h/.cpp`,
+   ported from Poker/BlackjackCheat's own, for every string those three
+   changes draw. The FIRST version of (b), `DrawSeatHandStatus()`,
+   stacked one line per seat in a fixed screen corner keyed by raw seat
+   index -- a live user report the same day called this "nonsense" once
+   actually seen on screen. Replaced with `DrawOpponentHandStatus()` +
+   `ComputeDenseRowForSeat()`, porting PokerCheat's own dense-relative-
+   seat-offset technique so each opponent's tiles sit "next to" that
+   seat's on-screen name/stack panel instead of a corner list (never
+   your own seat, matching PokerCheat's own opponent-only scope -- see
+   `DominoCheat.cpp`'s file header comment's "Session 8" entry for the
+   full detail on both versions). Revised a THIRD time the same day: the
+   per-tile TEXT itself (`FormatTile()`'s `"[low|high]"`) is now real 2D
+   tile-face icons, `GRAPHICS::DRAW_SPRITE`'d against the game's own
+   `"dominos_set_N"` texture dictionary -- the same asset family
+   PokerCheat's `card_set_N` card icons use. CONFIRMED to exist for
+   dominoes via `dominoes_sp.ysc.c`'s own `func_267` (`"dominos_set_"+N`)
+   and `func_862` (`"DOMINO_<low>_<high>"` per-tile names, matching
+   `DominoHandEval::DecodeTile()`'s own numbering exactly) PLUS the
+   user's own read of the game's `ui_minigames.txt` asset manifest
+   listing `dominos_set_1..6` alongside poker's `card_set_1..9` -- see
+   `BuildDominoTileTextureName()`/`FindLoadedDominoSetDict()`'s own
+   header comments in `DominoCheat.cpp` for the full citation trail.
+   **The opponent-hand tile icons ARE now live-confirmed** (same day,
+   2026-09-13) -- the user tuned `OpponentTileIconWidth/Height/SpacingX/
+   LabelOffsetX` live via Reload Config against a real table (final
+   values: `0.015/0.045/0.015/0.035`, notably smaller/narrower than
+   PokerCheat's portrait-card starting guess), confirming both the
+   `"dominos_set_N"`/`"DOMINO_<low>_<high>"` asset pair actually renders
+   AND that the dense-row rotation direction (`ComputeDenseRowForSeat()`)
+   puts opponents in sensible positions for at least the table
+   configuration tested. `DrawWorldMarkerOnTile()`'s "PLAY THIS ONE"/
+   "WINNING MOVE" world-space text is ALSO live-confirmed now, same
+   day -- a live report found the original -0.06f/0 offset sitting over
+   the tile's LEFT side instead of centered; `WorldMarkerOffsetX=-0.03`
+   (Y unchanged) centers it correctly. Also fixed the same day: the
+   advice readout and the world marker were both showing during EVERY
+   sub-state of mySeat's own turn (1-6), not just the real decision
+   window -- both are now gated on `turnSubState==4` specifically
+   (CONFIRMED LIVE), which supersedes `kTurnSubStateFieldOffset`'s
+   original "4/5 both mean committing the move" guess. And per a
+   further user request, the advice readout and the world marker are
+   now two independent `Config` toggles -- `ShowAdvice` and
+   `ShowPlayableDomino` -- instead of always showing together. **Still NOT
+   live-confirmed**: whether the dense-row rotation direction holds for
+   every seat arrangement (only tested from one specific seat so far).
+9. Same evening, user report: the blocking/win advisor's recommendations
+   were legal but still lost more than expected -- not a bug, a weak
+   heuristic. `DetermineBestMove()`'s old logic only ever looked ONE ply
+   ahead (minimize `CountPipAcrossOpponents()` against the single
+   resulting open end, tie-broken by playing the highest-pip tile
+   first), which can hand an opponent a great position moves later
+   without ever seeing it coming. Replaced with a new pure-logic header,
+   `src/DominoSearch.h` (same "zero game-dependency, unit tested in
+   isolation" convention as `DominoHandEval.h`): a depth-limited
+   PARANOID minimax (alpha-beta pruned; treats all three opponents as
+   one adversary that always plays whichever of their own legal replies
+   is worst for you) over the fully-known hands, sound specifically
+   because a full 4-seat, boneyard-empty game has zero hidden
+   information left to guess at -- the only real uncertainty is what an
+   opponent chooses to play, which the paranoid assumption resolves as a
+   worst-case-safe guarantee rather than an average-case guess. Also,
+   per a user question mid-session: `DetermineBestMove()` no longer
+   calls `FindPlayableTiles()` (the native legal-move query) at all --
+   once `DetermineOpenEnds()` gives the open pip set, "does this hand
+   tile match an open pip" is plain local logic, exactly the same check
+   the fallback path already did for `endCount==0`, so the native call
+   was pure redundancy for this one function (its OTHER call sites --
+   the HUD's own `*` marker, `ProbeLegalMoves()` -- are untouched and
+   still use it). The deep search only runs when every hand is fully
+   known (all 4 seats dealt, boneyard empty -- the same scope
+   `CountPipAcrossOpponents()`'s own header comment already draws); a
+   real boneyard or the very first move of a round (no open ends yet)
+   falls back to the original 1-ply heuristic, now with its own
+   redundant native call similarly removed. Added
+   `tests/DominoHandEvalTests.cpp` cases for the new header, including
+   one built directly from the failure mode that motivated this session:
+   two candidate replies that look EQUALLY safe one ply out, where the
+   old heuristic's pip-total tie-break picked the one that (two plies
+   later) hands the opponent their double and an outright win -- the new
+   minimax correctly avoids it. Builds clean (Debug + Release) and all
+   unit tests pass; the search itself is NOT yet live-tested against a
+   real table, and its default 8-ply search depth is a starting guess,
+   not tuned against real frame-time.
 
 Read `DominoCheat.cpp`'s header comment before touching any offset -- it
 lays out the full derivation/citation trail (exact line numbers in the
@@ -133,9 +237,10 @@ that answers that is the placement-COMMIT one
 (`MINIGAME::_0x012027C28F421F46`), whose board-layout internals were
 decompiled (see `DominoCheat.cpp`'s "Session 3"/IDA writeup) but not
 fully mapped to specific field meanings. Also not ported: func_352/353's
-own move-preference heuristics (prefer a scoring-bonus tile, else the
-highest-pip tile) -- this file currently just marks every legal tile
-equally.
+own move-preference heuristics (prefer a scoring-bonus tile) -- the
+pip-total tiebreak IS now ported (`DominoSearch.h`'s own tie-break), but
+"prefer a scoring-bonus tile" specifically needs board-layout fields
+nobody has mapped.
 
 ## Coding conventions
 
@@ -176,9 +281,10 @@ Runtime log: `<game folder>\DominoCheat.log`, written by `Log::Write`.
 ## Tests
 
 `tests/DominoHandEvalTests.vcxproj` unit-tests `src/DominoHandEval.h`
-(the tile decode table + pip scoring) in complete isolation from the
+(the tile decode table + pip scoring) AND `src/DominoSearch.h` (the
+depth-limited minimax, added Session 9) in complete isolation from the
 game -- plain console app, no ScriptHookRDR2/game dependency, links
-against the exact same header the mod itself includes:
+against the exact same headers the mod itself includes:
 
 ```
 "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" tests\DominoHandEvalTests.vcxproj /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal
@@ -202,7 +308,17 @@ Exits 0 and prints `ALL PASS` if every case passes; nonzero with a
   double-six index-to-{low,high} mapping, transcribed exactly from the
   decompile's own func_151) + pip-total scoring. Zero game dependency,
   shared by the mod and `tests/DominoHandEvalTests.cpp`. No legal-move/
-  best-play logic yet -- see its own header comment.
+  best-play logic itself -- see `DominoSearch.h` below for that.
+- `src/DominoSearch.h` -- pure-logic depth-limited PARANOID minimax
+  (alpha-beta pruned) over fully-known hands, added Session 9
+  (2026-09-13) to replace `DetermineBestMove()`'s original 1-ply
+  heuristic. Zero game dependency (built on `DominoHandEval::Tile`
+  alone), same isolation convention as `DominoHandEval.h`, unit-tested
+  in `tests/DominoHandEvalTests.cpp`. See its own file header comment
+  for the full rationale (why paranoid minimax is sound specifically
+  when nothing is hidden) and explicit scope limits (board modeled as a
+  SET of open pip values, not exact end-count/topology; boneyard draws
+  not modeled at all).
 - `src/ScriptLocal.h` -- a small chainable script-local field/array
   accessor, ported from HorseMenu's own `game/rdr/ScriptLocal.hpp`/
   `ScriptGlobal.hpp` (`..\HorseMenu\src\game\rdr\`) at the user's own
@@ -230,18 +346,36 @@ Exits 0 and prints `ALL PASS` if every case passes; nonzero with a
   from PokerCheat/BlackjackCheat (nothing dominoes-specific in either
   file).
 - `src/Config.h/.cpp` -- INI-backed HUD toggles (`DominoCheat.ini`), same
-  inipp-based approach as PokerCheat/BlackjackCheat's own, trimmed to
-  this mod's much smaller toggle set (no board/turn advice to gate a
-  toggle on yet).
+  inipp-based approach as PokerCheat/BlackjackCheat's own. Now also holds
+  a `Language` override (see `src/Localization.h/.cpp` below) and, Debug-
+  only, the real-font HUD's placeholder screen positions
+  (`OpponentHandBaseX/Y/StepY`, `BoneyardX/Y`, `MoveAdviceX/Y`).
+- `src/Localization.h/.cpp` -- ported from Poker/BlackjackCheat's own
+  Localization files (2026-09-13 release-prep pass). Localizes every
+  string the real-font HUD draws (move-advice headline, SAFE/RISKY/VERY
+  RISKY qualifier, world-space tile markers, opponent-hand row's "Seat N"
+  header word, boneyard label) across the same 13 languages
+  `LANGUAGE::_GET_CURRENT_LANGUAGE_ID()` supports, auto-detected with a
+  `DominoCheat.ini` `[General] Language` override. Tile notation itself
+  (`[3|5]`) stays language-agnostic digits.
 - `src/ExtraNatives.h` -- `UIDEBUG::_BG_DISPLAY_TEXT`/`_BG_SET_TEXT_COLOR`,
-  vendored unchanged. Not currently used by `DominoCheat.cpp` -- its
-  `DrawLine()` uses plain `UI::DRAW_TEXT`/`SET_TEXT_COLOR_RGBA` instead,
-  same as PokerCheat/BlackjackCheat's own Debug text-panel `DrawLine()`
-  (both projects' F10/F11 menus themselves also render through plain
-  `UI::DRAW_TEXT` via `scriptmenu.cpp`, which is confirmed working every
-  session) -- the UIDEBUG pair is only needed for a custom RDR2 font or
-  rich-text `<FONT FACE=...>` tags (see PokerCheat's `DrawFontTest()`
-  header comment), neither of which `DrawLine()` here uses.
+  vendored unchanged. As of the 2026-09-13 release-prep pass, this IS
+  used -- `DominoCheat.cpp`'s `BgText()`/`DrawBgText()` helpers wrap it
+  with `$Font5` rich text for every Release-facing TEXT draw call (the
+  opponent-hand row's "Seat N" label in `DrawOpponentHandStatus()`,
+  `DrawBoneyardStatus()`, `DrawMoveAdviceStatus()`,
+  `DrawMoveSafetyStatus()`, `DrawWorldMarkerOnTile()`), the same working
+  replacement Poker/BlackjackCheat already documented for plain
+  `UI::DRAW_TEXT`/`SET_TEXT_COLOR_RGBA` being nullsub on this game
+  build. The opponent-hand tiles THEMSELVES are real 2D sprites drawn
+  via plain `GRAPHICS::DRAW_SPRITE` (a different, already-confirmed-
+  working native, same one Poker/BlackjackCheat use for their own card
+  icons) against the game's own `"dominos_set_N"` dictionary -- see
+  `BuildDominoTileTextureName()`/`FindLoadedDominoSetDict()` in
+  `DominoCheat.cpp`. `DrawLine()`'s raw Debug diagnostic panel is the
+  one thing still on the old plain text pipeline -- harmless there since
+  it never rendered in Release anyway and stays Debug-only now (see
+  `DrawOverlay()`'s own comment).
 
 ## External resources
 
@@ -285,17 +419,52 @@ Exits 0 and prints `ALL PASS` if every case passes; nonzero with a
 Both "Probe Legal Moves" and the "Turn: seat N" overlay line are now
 CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
 
-1. **Watch a hand grow past 7 tiles** (draw from the boneyard because no
+1. **Live-test Session 9's minimax** (`DominoSearch.h` +
+   `DetermineBestMove()`'s rewrite) against a real full 4-seat,
+   boneyard-empty game via `F12 -> Probe Best Move` -- confirm it still
+   only recommends legal moves, and ideally track win rate against the
+   old 1-ply heuristic's own baseline. Also worth watching real
+   frame-time on the decision tick to see if the 8-ply default search
+   depth needs tuning down (or can go deeper -- see `DominoSearch.h`'s
+   own comment on why endgame hand sizes make deeper search cheap
+   exactly when it matters most).
+2. **Watch a hand grow past 7 tiles** (draw from the boneyard because no
    hand tile was playable) and confirm `ProbeSeatHands()`'s widened
    (up to 19) tile dump shows the real extra tile(s) rather than garbage.
-2. **Trace kSeatActiveFlagOffset's real meaning** (reads 100 when
+3. **Trace kSeatActiveFlagOffset's real meaning** (reads 100 when
    occupied, 0 when empty) -- low priority, not blocking anything.
-3. The natural next feature is WHICH end to play a legal tile on, and/or
-   porting func_352/353's own preference order (scoring-bonus tile
-   first, else highest-pip tile) -- both need the placement-commit
-   native's board-layout internals (partially decompiled, not fully
-   mapped -- see "Session 3"'s IDA writeup) or a second read-only query
-   native we haven't looked for yet.
+4. Model boneyard draws inside `DominoSearch.h` for the <4-seat case
+   (the remaining boneyard order is itself fully known/deterministic,
+   see this file's own hidden-information paragraph above) -- would let
+   the deep search replace the 1-ply fallback in that case too, instead
+   of only when all 4 seats are dealt. Separately, WHICH end to play a
+   legal tile on when a real board has independent same-value ends, and
+   porting func_352/353's own "prefer a scoring-bonus tile" step, both
+   still need the placement-commit native's board-layout internals
+   (partially decompiled, not fully mapped -- see "Session 3"'s IDA
+   writeup) or a second read-only query native we haven't looked for yet.
+5. Finish calibrating Session 8's real-font/real-icon HUD -- the
+   opponent-hand tile icons (`OpponentTileIconWidth/Height/SpacingX/
+   LabelOffsetX`) are DONE, user-tuned live (2026-09-13, see Status
+   above for the final values), which also incidentally confirmed
+   `FindLoadedDominoSetDict()`/`BuildDominoTileTextureName()`'s
+   `"dominos_set_N"`/`"DOMINO_<low>_<high>"` asset pair actually renders
+   correct tile faces and that `ComputeDenseRowForSeat()`'s rotation
+   direction put opponents in sensible spots for at least the seat
+   tested. Still open: (a) `OpponentHandBaseX/Y/StepY` and `BoneyardX/Y`/
+   `MoveAdviceX/Y` haven't been touched yet -- still PokerCheat's own
+   pre-calibration numbers, not this mod's. (b) `ComputeDenseRowForSeat()`'s
+   direction has only been checked from ONE seat -- worth a second data
+   point from a different raw seat to confirm it truly rotates relative
+   to you (PokerCheat's own confirmation) rather than coincidentally
+   lining up from the one seat tried so far. (c) `WorldMarkerOffsetX/Y/
+   FontSize` (just added to `Config`, still the original placeholder
+   -0.06f/0/26 values) -- a live report found "PLAY THIS ONE"/"WINNING
+   MOVE" sitting over the tile's LEFT side instead of centered; retune
+   via F12 -> Reload Config until it visually centers (there's no
+   SET_TEXT_CENTRE equivalent on the $Font5/UIDEBUG pipeline -- see
+   `DrawWorldMarkerOnTile()`'s own comment -- so this is eyeball-tuned
+   the same way the icon strip was, not computed).
 
 Expect more corrections on anything still marked untraced -- four fixes
 so far (`kSeatStride`, the boneyard header word, the ped-array header

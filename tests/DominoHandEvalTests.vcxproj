@@ -11,6 +11,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\DominoHandEval.h" />
+    <ClInclude Include="..\src\DominoSearch.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{3E7F5D2A-6C41-4B8E-9A2D-8F1C4E6B7A03}</ProjectGuid>

@@ -28,6 +28,7 @@
     <ClCompile Include="src\PatternScan.cpp" />
     <ClCompile Include="src\GamePointers.cpp" />
     <ClCompile Include="src\Config.cpp" />
+    <ClCompile Include="src\Localization.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\ScriptHookSDK\inc\main.h" />
@@ -41,10 +42,12 @@
     <ClInclude Include="src\ExtraNatives.h" />
     <ClInclude Include="src\DominoCheat.h" />
     <ClInclude Include="src\DominoHandEval.h" />
+    <ClInclude Include="src\DominoSearch.h" />
     <ClInclude Include="src\PatternScan.h" />
     <ClInclude Include="src\GamePointers.h" />
     <ClInclude Include="src\ScriptLocal.h" />
     <ClInclude Include="src\Config.h" />
+    <ClInclude Include="src\Localization.h" />
     <ClInclude Include="external\RDR-Classes\script\scrThread.hpp" />
     <ClInclude Include="external\RDR-Classes\script\scrThreadContext.hpp" />
     <ClInclude Include="external\RDR-Classes\script\scrProgram.hpp" />

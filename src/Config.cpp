@@ -92,9 +92,15 @@ namespace
 
 		g_values.ShowOpponentHands = GetOr(general, "ShowOpponentHands", defaults.ShowOpponentHands);
 		g_values.ShowBoneyardPrediction = GetOr(general, "ShowBoneyardPrediction", defaults.ShowBoneyardPrediction);
+		g_values.ShowAdvice = GetOr(general, "ShowAdvice", defaults.ShowAdvice);
+		g_values.ShowPlayableDomino = GetOr(general, "ShowPlayableDomino", defaults.ShowPlayableDomino);
+		g_values.Language = GetOr(general, "Language", defaults.Language);
 
 		SetBool(general, "ShowOpponentHands", g_values.ShowOpponentHands);
 		SetBool(general, "ShowBoneyardPrediction", g_values.ShowBoneyardPrediction);
+		SetBool(general, "ShowAdvice", g_values.ShowAdvice);
+		SetBool(general, "ShowPlayableDomino", g_values.ShowPlayableDomino);
+		general["Language"] = g_values.Language;
 
 #ifdef _DEBUG
 		auto& hud = ini.sections["HUD"];
@@ -102,10 +108,38 @@ namespace
 		g_values.PanelY = GetOr(hud, "PanelY", defaults.PanelY);
 		g_values.TextScale = GetOr(hud, "TextScale", defaults.TextScale);
 		g_values.TitleTextScale = GetOr(hud, "TitleTextScale", defaults.TitleTextScale);
+		g_values.OpponentHandBaseX = GetOr(hud, "OpponentHandBaseX", defaults.OpponentHandBaseX);
+		g_values.OpponentHandBaseY = GetOr(hud, "OpponentHandBaseY", defaults.OpponentHandBaseY);
+		g_values.OpponentHandStepY = GetOr(hud, "OpponentHandStepY", defaults.OpponentHandStepY);
+		g_values.OpponentTileIconLabelOffsetX = GetOr(hud, "OpponentTileIconLabelOffsetX", defaults.OpponentTileIconLabelOffsetX);
+		g_values.OpponentTileIconSpacingX = GetOr(hud, "OpponentTileIconSpacingX", defaults.OpponentTileIconSpacingX);
+		g_values.OpponentTileIconWidth = GetOr(hud, "OpponentTileIconWidth", defaults.OpponentTileIconWidth);
+		g_values.OpponentTileIconHeight = GetOr(hud, "OpponentTileIconHeight", defaults.OpponentTileIconHeight);
+		g_values.WorldMarkerOffsetX = GetOr(hud, "WorldMarkerOffsetX", defaults.WorldMarkerOffsetX);
+		g_values.WorldMarkerOffsetY = GetOr(hud, "WorldMarkerOffsetY", defaults.WorldMarkerOffsetY);
+		g_values.WorldMarkerFontSize = GetOr(hud, "WorldMarkerFontSize", defaults.WorldMarkerFontSize);
+		g_values.BoneyardX = GetOr(hud, "BoneyardX", defaults.BoneyardX);
+		g_values.BoneyardY = GetOr(hud, "BoneyardY", defaults.BoneyardY);
+		g_values.MoveAdviceX = GetOr(hud, "MoveAdviceX", defaults.MoveAdviceX);
+		g_values.MoveAdviceY = GetOr(hud, "MoveAdviceY", defaults.MoveAdviceY);
 		SetFloat(hud, "PanelX", g_values.PanelX);
 		SetFloat(hud, "PanelY", g_values.PanelY);
 		SetFloat(hud, "TextScale", g_values.TextScale);
 		SetFloat(hud, "TitleTextScale", g_values.TitleTextScale);
+		SetFloat(hud, "OpponentHandBaseX", g_values.OpponentHandBaseX);
+		SetFloat(hud, "OpponentHandBaseY", g_values.OpponentHandBaseY);
+		SetFloat(hud, "OpponentHandStepY", g_values.OpponentHandStepY);
+		SetFloat(hud, "OpponentTileIconLabelOffsetX", g_values.OpponentTileIconLabelOffsetX);
+		SetFloat(hud, "OpponentTileIconSpacingX", g_values.OpponentTileIconSpacingX);
+		SetFloat(hud, "OpponentTileIconWidth", g_values.OpponentTileIconWidth);
+		SetFloat(hud, "OpponentTileIconHeight", g_values.OpponentTileIconHeight);
+		SetFloat(hud, "WorldMarkerOffsetX", g_values.WorldMarkerOffsetX);
+		SetFloat(hud, "WorldMarkerOffsetY", g_values.WorldMarkerOffsetY);
+		SetFloat(hud, "WorldMarkerFontSize", g_values.WorldMarkerFontSize);
+		SetFloat(hud, "BoneyardX", g_values.BoneyardX);
+		SetFloat(hud, "BoneyardY", g_values.BoneyardY);
+		SetFloat(hud, "MoveAdviceX", g_values.MoveAdviceX);
+		SetFloat(hud, "MoveAdviceY", g_values.MoveAdviceY);
 #endif
 
 		{
