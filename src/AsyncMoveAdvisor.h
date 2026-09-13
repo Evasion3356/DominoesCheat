@@ -61,36 +61,67 @@
 	anything torn down as part of it.
 
 	The fix is NOT to always detach() instead -- detach() has its own
-	sharp edge: it returns before the worker has necessarily woken up and
-	stopped touching m_jobMutex/m_jobCv/m_shuttingDown (members of THIS
-	object), so if the destructor's caller then frees that storage while
-	the worker is still mid-wait, that's a real use-after-free. That's
-	fine for the one production caller (a function-local static destroyed
-	exactly once, at process/DLL teardown, where the storage is never
-	reused before the OS reclaims the whole address space moments later)
-	but NOT fine for a normal-lifetime instance -- and
-	tests/DominoHandEvalTests.cpp's own TestAsyncAdvisorPublishesMatchingResult()
-	constructs exactly that: a short-lived local AsyncMoveAdvisor<int>
-	that must be fully stopped, not just signaled, before its stack frame
-	goes away.
+	sharp edge, and it's not just theoretical: this DLL is loaded under
+	ScriptHookRDR2, and its ".dev" hot-reload mode does a REAL
+	FreeLibrary()+LoadLibrary() cycle on this exact module while the game
+	process keeps running (confirmed 2026-09-13, the same day this file
+	was written) -- unlike real process exit, where detach()'s "storage
+	is never reused" reasoning is sound because the whole address space
+	is about to disappear together, a hot-reload genuinely unmaps this
+	module while the process lives on. If the worker is still executing
+	code from that mapping (or still touching m_jobMutex/m_jobCv/
+	m_shuttingDown, members of THIS object) when that happens, that's a
+	real crash risk, not a harmless no-op -- and separately, ANY
+	shorter-than-process-lifetime instance (e.g.
+	tests/DominoHandEvalTests.cpp's own
+	TestAsyncAdvisorPublishesMatchingResult(), a short-lived local
+	AsyncMoveAdvisor<int>) needs the worker actually stopped, not just
+	signaled, before its storage goes away regardless of DllMain at all.
 
-	So the destructor distinguishes the two cases via
+	So the destructor picks one of three behaviors via
 	AsyncMoveAdvisorDetail::g_processDetaching, a flag main.cpp's DllMain
 	sets at the top of its DLL_PROCESS_DETACH case -- which runs BEFORE
 	the CRT's automatic static-destruction pass that tears down function-
 	local statics, so the flag is already true by the time this
-	destructor fires from that path. join() (safe, correct, waits for
-	real) is the default for every normal-lifetime instance, including
-	the test's; detach() (never blocks, so safe under the loader lock) is
-	used ONLY when g_processDetaching is set, where the impending process
-	death makes its use-after-free risk moot.
+	destructor fires from that path (hot-reload OR real process exit;
+	main.cpp does not currently distinguish the two, see its own
+	DLL_PROCESS_DETACH case comment):
+	  - g_processDetaching == false (any normal-lifetime instance,
+	    including the test's): plain join(). Safe -- nothing here is
+	    running under the loader lock -- and necessary, since the worker
+	    must be fully stopped before this object's members are destroyed.
+	  - g_processDetaching == true: NEVER join() (the deadlock risk above
+	    applies unconditionally here, real exit or hot-reload alike) --
+	    but also never a bare, immediate detach(). Instead, poll
+	    m_workerExited (a plain atomic WorkerLoop sets immediately before
+	    it returns, BEFORE any of the CRT's own loader-lock-needing
+	    thread-exit machinery even begins) for up to
+	    kProcessDetachWaitTimeout. This is NOT the same hazard as
+	    join(): join() blocks on the OS thread HANDLE, which only
+	    signals once that loader-lock-guarded machinery has fully run;
+	    polling our own atomic instead only waits for WorkerLoop's body
+	    to finish, a point strictly BEFORE the worker could ever need the
+	    lock we're already holding, so it can't deadlock against us no
+	    matter how long it takes. Gives the worker a real chance to
+	    actually finish for the hot-reload case (where it matters) while
+	    remaining bounded either way; detach() (never blocks, so safe
+	    unconditionally) is called afterward regardless of whether the
+	    wait succeeded or timed out, since the std::thread object itself
+	    still needs joining or detaching or its own destructor will
+	    std::terminate.
 
 	NOT yet live-tested (2026-09-13) -- written immediately after the
 	synchronous version's own live freeze, as the more robust follow-up
 	fix requested by the user rather than just tuning the existing bound.
-	The join()/detach() split above was added the same day, before any
-	live test of this file at all, after review caught the original
-	unconditional join()'s DllMain deadlock risk.
+	The join()/wait-then-detach() split above was added the same day,
+	before any live test of this file at all: first as a plain
+	join()-vs-detach() split (after review caught the original
+	unconditional join()'s DllMain deadlock risk), then refined into the
+	bounded wait once the user's own live testing via
+	ScriptHookRDR2.dev's hot-reload surfaced that unconditional detach()
+	was leaving the .asi file locked on disk after eject -- exactly the
+	"worker still running when the module unmaps" hazard this comment
+	describes above, not yet itself re-tested against that exact repro.
 */
 
 #pragma once
@@ -120,6 +151,16 @@ namespace AsyncMoveAdvisorDetail
 	// actually started" / "has it actually finished" without any real
 	// in-game plumbing to watch.
 	inline std::atomic<int> g_liveWorkerCount{ 0 };
+
+	// How long the destructor will wait (polling m_workerExited, never
+	// blocking on the thread handle -- see this file's own header
+	// comment) for the worker to finish on its own before giving up and
+	// detach()ing anyway, when torn down via DllMain(DLL_PROCESS_DETACH).
+	// Generous relative to DominoSearch::kDefaultNodeBudget's own "a
+	// handful of milliseconds" typical case, so a hot-reload (the
+	// scenario this exists for) almost always sees the worker actually
+	// gone rather than merely detached.
+	inline constexpr std::chrono::milliseconds kProcessDetachWaitTimeout{ 500 };
 }
 
 template <typename Key>
@@ -147,12 +188,22 @@ public:
 		if (AsyncMoveAdvisorDetail::g_processDetaching.load())
 		{
 			// join() here can deadlock against our own DllMain (see this
-			// file's own header comment) -- detach() never blocks, so
-			// it's safe unconditionally. Its own use-after-free risk is
-			// moot specifically here: the only real caller reaching this
-			// branch is a function-local static torn down at process/DLL
-			// death, where the storage is never reused before the OS
-			// reclaims the whole address space moments later.
+			// file's own header comment) -- so never join() in this
+			// branch. But don't just detach() immediately either: give
+			// the worker a bounded chance to actually finish first, by
+			// polling m_workerExited (never the thread handle) -- see
+			// the header comment for exactly why that's safe against the
+			// same deadlock join() risks, and why it matters for
+			// ScriptHookRDR2.dev's hot-reload specifically (unlike real
+			// process exit, that scenario genuinely unmaps this module
+			// while the process keeps running).
+			auto deadline = std::chrono::steady_clock::now() + AsyncMoveAdvisorDetail::kProcessDetachWaitTimeout;
+			while (!m_workerExited.load() && std::chrono::steady_clock::now() < deadline)
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			// Always detach() here, whether the worker already exited or
+			// the wait timed out: detach() never blocks, so it's safe
+			// unconditionally, and the std::thread object itself must be
+			// joined or detached or its destructor will std::terminate().
 			m_worker.detach();
 		}
 		else
@@ -224,6 +275,13 @@ private:
 				if (m_shuttingDown)
 				{
 					AsyncMoveAdvisorDetail::g_liveWorkerCount.fetch_sub(1, std::memory_order_relaxed);
+					// Set BEFORE returning -- this is the signal the
+					// destructor's bounded wait polls (see its own
+					// comment), and it must land before anything in this
+					// thread's own exit sequence could need the loader
+					// lock, which starts only once this function actually
+					// returns.
+					m_workerExited.store(true, std::memory_order_release);
 					return;
 				}
 				key = m_pendingKey;
@@ -264,6 +322,12 @@ private:
 
 	std::mutex m_resultMutex;
 	Published m_latest;
+
+	// Set by WorkerLoop() immediately before it returns on shutdown;
+	// polled (never joined) by the destructor's process-detaching
+	// branch. See both call sites' own comments for why this is safe
+	// where join() would not be.
+	std::atomic<bool> m_workerExited{ false };
 
 	// Test-only, see Testing_SetArtificialJobDelay(). Milliseconds, 0 = off.
 	std::atomic<long long> m_testDelayMs{ 0 };

@@ -289,37 +289,47 @@ namespace
 		Check(AsyncMoveAdvisorDetail::g_liveWorkerCount.load() == 0, "normal teardown's destructor guarantees the worker has fully exited before returning", "join()'s happens-before should make this deterministic, not a race");
 	}
 
-	// Covers the destructor's PROCESS-DETACHING path
+	// Both cover the destructor's PROCESS-DETACHING path
 	// (AsyncMoveAdvisorDetail::g_processDetaching == true, set for real by
-	// main.cpp's DllMain at the top of DLL_PROCESS_DETACH) -- the whole
-	// reason that branch exists is to NOT block DllMain while a job is
-	// still running. Deliberately does NOT destroy a normal, stack- or
-	// heap-owned instance for this: doing so would exercise the exact
-	// use-after-free this file's own header comment warns about (the
-	// destructor returns via detach() before the worker has necessarily
-	// stopped touching this object's members, and unlike the real
-	// production caller -- a function-local static whose storage is never
-	// reused before the whole process dies -- this TEST PROCESS keeps
-	// running afterward and could reuse that memory for something else).
-	// Instead, the object is placement-new'd into function-local static
-	// storage and never deallocated (only ever destructed) -- mirroring
-	// the real justification exactly: the bytes remain valid for the rest
-	// of the process's life either way, so the still-running worker
-	// touching them after the destructor returns is safe here too, not
-	// just assumed safe.
-	void TestAsyncAdvisorDetachesWithoutBlockingWhenProcessDetaching()
+	// main.cpp's DllMain at the top of DLL_PROCESS_DETACH), added/revised
+	// same day (2026-09-13) after the user's own live testing via
+	// ScriptHookRDR2.dev's hot-reload found an earlier, simpler
+	// unconditional-detach() version left the .asi file locked on disk
+	// after eject -- exactly the "worker still running when the module
+	// unmaps" hazard the bounded-wait redesign exists to shrink. Neither
+	// test destroys a normal, stack- or heap-owned instance: doing so
+	// would exercise the exact use-after-free this file's own header
+	// comment warns about (the destructor can return via detach() before
+	// the worker has necessarily stopped touching this object's members,
+	// and unlike the real production caller -- a function-local static
+	// whose storage is never reused before the whole process dies -- this
+	// TEST PROCESS keeps running afterward and could reuse that memory
+	// for something else). Instead, each object is placement-new'd into
+	// function-local static storage and never deallocated (only ever
+	// destructed) -- mirroring the real justification exactly: the bytes
+	// remain valid for the rest of the process's life either way, so a
+	// still-running worker touching them after the destructor returns is
+	// safe here too, not just assumed safe.
+
+	// Case A: the in-flight job finishes WELL WITHIN
+	// AsyncMoveAdvisorDetail::kProcessDetachWaitTimeout. The destructor
+	// should actually wait for it (not return instantly) and the worker
+	// should be fully exited (g_liveWorkerCount back to 0) by the time it
+	// does -- proving the bounded wait, not just the fallback detach(),
+	// is what's doing the work here.
+	void TestAsyncAdvisorProcessDetachWaitCompletesForQuickJob()
 	{
 		using Advisor = AsyncMoveAdvisor<int>;
 		static alignas(Advisor) std::byte storage[sizeof(Advisor)];
 		Advisor* advisor = new (&storage) Advisor();
 
-		Check(WaitForLiveWorkerCount(1, std::chrono::seconds(2)), "TestAsyncAdvisorDetachesWithoutBlockingWhenProcessDetaching: worker starts", "g_liveWorkerCount never reached 1");
+		Check(WaitForLiveWorkerCount(1, std::chrono::seconds(2)), "TestAsyncAdvisorProcessDetachWaitCompletesForQuickJob: worker starts", "g_liveWorkerCount never reached 1");
 
-		constexpr auto kJobDelay = std::chrono::milliseconds(300);
+		constexpr auto kJobDelay = std::chrono::milliseconds(80); // well under kProcessDetachWaitTimeout (500ms)
 		advisor->Testing_SetArtificialJobDelay(kJobDelay);
 		GameState state = TwoSeatState({ Tile{5,5} }, { Tile{0,1}, Tile{2,3} }, { 5 });
 		advisor->SubmitJob(1, state, 0, 1);
-		std::this_thread::sleep_for(std::chrono::milliseconds(30));
+		std::this_thread::sleep_for(std::chrono::milliseconds(20)); // let it pick the job up and start the delay
 
 		AsyncMoveAdvisorDetail::g_processDetaching.store(true);
 		auto start = std::chrono::steady_clock::now();
@@ -327,8 +337,39 @@ namespace
 		auto elapsed = std::chrono::steady_clock::now() - start;
 		AsyncMoveAdvisorDetail::g_processDetaching.store(false);
 
-		Check(elapsed < std::chrono::milliseconds(100), "process-detaching teardown's destructor does not block on an in-flight job", "expected detach() to return almost immediately despite a ~300ms job still running -- a regression back to join() here is exactly the DllMain deadlock risk this path exists to avoid");
-		Check(WaitForLiveWorkerCount(0, std::chrono::seconds(2)), "the detached worker still exits cleanly on its own afterward", "expected g_liveWorkerCount back to 0 within 2s even though the destructor didn't wait for it");
+		Check(elapsed < AsyncMoveAdvisorDetail::kProcessDetachWaitTimeout, "process-detaching teardown's bounded wait returns well before the timeout when the job finishes on its own", "expected the destructor to notice m_workerExited and return long before the 500ms timeout, not wait the full budget every time");
+		Check(AsyncMoveAdvisorDetail::g_liveWorkerCount.load() == 0, "process-detaching teardown's bounded wait actually waits for the worker, not just the fallback detach()", "expected the worker to have fully exited by the time the destructor returns, since the job finished within the timeout");
+	}
+
+	// Case B: the in-flight job does NOT finish within
+	// kProcessDetachWaitTimeout. The destructor should block for roughly
+	// the bounded timeout (not indefinitely -- this is the guarantee that
+	// keeps this path safe against DllMain, see the header comment) and
+	// then fall back to detach(), leaving the worker to finish on its own
+	// afterward.
+	void TestAsyncAdvisorProcessDetachTimesOutThenDetachesForSlowJob()
+	{
+		using Advisor = AsyncMoveAdvisor<int>;
+		static alignas(Advisor) std::byte storage[sizeof(Advisor)];
+		Advisor* advisor = new (&storage) Advisor();
+
+		Check(WaitForLiveWorkerCount(1, std::chrono::seconds(2)), "TestAsyncAdvisorProcessDetachTimesOutThenDetachesForSlowJob: worker starts", "g_liveWorkerCount never reached 1");
+
+		constexpr auto kJobDelay = std::chrono::milliseconds(800); // well over kProcessDetachWaitTimeout (500ms)
+		advisor->Testing_SetArtificialJobDelay(kJobDelay);
+		GameState state = TwoSeatState({ Tile{5,5} }, { Tile{0,1}, Tile{2,3} }, { 5 });
+		advisor->SubmitJob(1, state, 0, 1);
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+		AsyncMoveAdvisorDetail::g_processDetaching.store(true);
+		auto start = std::chrono::steady_clock::now();
+		advisor->~Advisor();
+		auto elapsed = std::chrono::steady_clock::now() - start;
+		AsyncMoveAdvisorDetail::g_processDetaching.store(false);
+
+		Check(elapsed >= AsyncMoveAdvisorDetail::kProcessDetachWaitTimeout - std::chrono::milliseconds(50), "process-detaching teardown blocks for roughly the full timeout when the job outlives it", "expected the destructor to wait close to kProcessDetachWaitTimeout before giving up");
+		Check(elapsed < AsyncMoveAdvisorDetail::kProcessDetachWaitTimeout + std::chrono::milliseconds(200), "process-detaching teardown's wait is still bounded, not indefinite", "a regression back to join() here would block for the job's full ~800ms (or hang outright under real DllMain) instead of stopping at the timeout");
+		Check(WaitForLiveWorkerCount(0, std::chrono::seconds(2)), "the detached worker still exits cleanly on its own once its job finally finishes", "expected g_liveWorkerCount back to 0 within 2s even though the destructor gave up waiting");
 	}
 }
 
@@ -344,7 +385,8 @@ int main()
 	TestSearchLooksPastImmediateReply();
 	TestAsyncAdvisorPublishesMatchingResult();
 	TestAsyncAdvisorJoinsSynchronouslyOnNormalTeardown();
-	TestAsyncAdvisorDetachesWithoutBlockingWhenProcessDetaching();
+	TestAsyncAdvisorProcessDetachWaitCompletesForQuickJob();
+	TestAsyncAdvisorProcessDetachTimesOutThenDetachesForSlowJob();
 
 	if (g_failures == 0)
 	{
