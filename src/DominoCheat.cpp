@@ -2012,10 +2012,21 @@ namespace DominoCheat
 			std::int32_t turnSeat = RoundLocal(thread).At(kCurrentTurnSeatFieldOffset).AsInt32();
 			std::int32_t turnSubState = RoundLocal(thread).At(kTurnSubStateFieldOffset).AsInt32();
 
-			DrawOpponentHandStatus(thread, mySeat);
+			// turnSubState==0 is func_76's own "idle/done" state -- the
+			// gap between one turn's cycle finishing and the next seat's
+			// actually starting (see this file's header comment's
+			// Round.f_1299 entry: 0 (idle/done) -> 1 -> 2 -> 3 -> 4/5 -> 6
+			// -> back to 0 every turn). Nothing real-font-HUD-worthy is
+			// happening during that gap, so draw nothing at all rather
+			// than risk a frame of stale/transitional hand or boneyard
+			// data.
+			if (turnSubState != 0)
+			{
+				DrawOpponentHandStatus(thread, mySeat);
 
-			if (cfg.ShowBoneyardPrediction)
-				DrawBoneyardStatus(thread);
+				if (cfg.ShowBoneyardPrediction)
+					DrawBoneyardStatus(thread);
+			}
 
 			// Best-move recommendation -- see DetermineBestMove()'s own
 			// header comment. CONFIRMED LIVE (2026-09-13, user report):
