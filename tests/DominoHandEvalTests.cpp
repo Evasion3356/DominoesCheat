@@ -529,19 +529,12 @@ namespace
 
 	void TestRuntimePresets()
 	{
-		Check(Config::Values{}.AdvisorRuntime == Config::RuntimePreset::Medium &&
-			Config::RuntimeMilliseconds(Config::RuntimePreset::Medium) == 1000,
-			"runtime defaults to Medium (1000 ms)", "default runtime changed");
-		Check(Config::RuntimeMilliseconds(Config::RuntimePreset::Low) == 250 &&
-			Config::RuntimeMilliseconds(Config::RuntimePreset::High) == 5000,
-			"Low and High runtime allowances", "preset timing mismatch");
-		Check(Config::ParseRuntimePreset("HIGH") == Config::RuntimePreset::High &&
-			Config::ParseRuntimePreset("low") == Config::RuntimePreset::Low &&
-			Config::ParseRuntimePreset("invalid") == Config::RuntimePreset::Medium &&
-			Config::ParseRuntimePreset("") == Config::RuntimePreset::Medium,
-			"runtime parsing is case-insensitive with safe fallback", "invalid runtime must select Medium");
-		Check(std::string(Config::RuntimePresetName(Config::RuntimePreset::Medium)) == "Medium",
-			"runtime serializes to canonical preset name", "INI value must be Medium");
+		Check(Config::Values{}.AdvisorWallClockBudgetMs == 1000,
+			"wall-clock budget defaults to 1000 ms", "default budget changed");
+		Check(Config::ClampWallClockBudgetMs(1000) == 1000 &&
+			Config::ClampWallClockBudgetMs(5) == 50 &&
+			Config::ClampWallClockBudgetMs(1000000) == 30000,
+			"raw INI budget is clamped to a sane [50, 30000] ms range", "clamp bounds mismatch");
 	}
 
 	void TestTimedSearchStopsAtCompletedDepth()

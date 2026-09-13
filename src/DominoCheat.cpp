@@ -1451,7 +1451,7 @@ namespace DominoCheat
 			DecisionKey key;
 			key.seat = mySeat;
 			key.deckCursor = deckCursor;
-			key.runtimeMs = Config::RuntimeMilliseconds(cfg.AdvisorRuntime);
+			key.runtimeMs = cfg.AdvisorWallClockBudgetMs;
 			DominoSearch::GameState& state = key.state;
 			state.rules = ReadAiRules(thread);
 			int totalTiles = 0;
@@ -1581,7 +1581,7 @@ namespace DominoCheat
 		}
 
 #ifndef _DEBUG
-		constexpr float kReleaseWorldMarkerOffsetX = -0.06f;
+		constexpr float kReleaseWorldMarkerOffsetX = -0.03f; // CONFIRMED LIVE 2026-09-13, see Config::Values::WorldMarkerOffsetX's own comment
 		constexpr float kReleaseWorldMarkerOffsetY = 0.0f;
 		constexpr int kReleaseWorldMarkerFontSize = 26;
 #endif
@@ -1686,9 +1686,9 @@ namespace DominoCheat
 		constexpr float kReleaseOpponentHandBaseX = 0.18f;
 		constexpr float kReleaseOpponentHandBaseY = 0.83f;
 		constexpr float kReleaseOpponentHandStepY = -0.0915f;
-		constexpr float kReleaseOpponentTileIconLabelOffsetX = 0.05f;
-		constexpr float kReleaseOpponentTileIconSpacingX = 0.022f;
-		constexpr float kReleaseOpponentTileIconWidth = 0.02f;
+		constexpr float kReleaseOpponentTileIconLabelOffsetX = 0.035f; // CONFIRMED LIVE 2026-09-13, see Config::Values::OpponentTileIconLabelOffsetX's own comment
+		constexpr float kReleaseOpponentTileIconSpacingX = 0.015f; // CONFIRMED LIVE 2026-09-13, see Config::Values::OpponentTileIconSpacingX's own comment
+		constexpr float kReleaseOpponentTileIconWidth = 0.015f; // CONFIRMED LIVE 2026-09-13, see Config::Values::OpponentTileIconWidth's own comment
 		constexpr float kReleaseOpponentTileIconHeight = 0.045f;
 		constexpr float kReleaseBoneyardX = 0.02f;
 		constexpr float kReleaseBoneyardY = 0.30f;

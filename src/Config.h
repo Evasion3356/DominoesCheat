@@ -17,48 +17,29 @@
 
 #pragma once
 
-#include <cctype>
 #include <string>
 
 namespace Config
 {
-	enum class RuntimePreset { Low, Medium, High };
-
-	inline RuntimePreset ParseRuntimePreset(std::string value)
+	// Sanity clamp for a raw [Advisor] WallClockBudget INI value -- guards
+	// against a 0/negative/absurd typo, not a curated preset list. 50ms is
+	// low enough to still be a deliberate choice; 30000ms (30s) is far
+	// beyond any real decision-window use.
+	inline int ClampWallClockBudgetMs(int value)
 	{
-		for (char& c : value)
-			c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-		if (value == "low")
-			return RuntimePreset::Low;
-		if (value == "high")
-			return RuntimePreset::High;
-		return RuntimePreset::Medium;
-	}
-
-	inline const char* RuntimePresetName(RuntimePreset value)
-	{
-		switch (value)
-		{
-		case RuntimePreset::Low: return "Low";
-		case RuntimePreset::High: return "High";
-		default: return "Medium";
-		}
-	}
-
-	inline int RuntimeMilliseconds(RuntimePreset value)
-	{
-		switch (value)
-		{
-		case RuntimePreset::Low: return 250;
-		case RuntimePreset::High: return 5000;
-		default: return 1000;
-		}
+		if (value < 50)
+			return 50;
+		if (value > 30000)
+			return 30000;
+		return value;
 	}
 
 	struct Values
 	{
-		// Wall-clock allowance per decision, used only by the worker.
-		RuntimePreset AdvisorRuntime = RuntimePreset::Medium;
+		// Wall-clock allowance per decision (milliseconds), used only by
+		// the background move-search worker. Self-describing INI key --
+		// [Advisor] WallClockBudget=1000 -- no preset name lookup.
+		int AdvisorWallClockBudgetMs = 1000;
 
 		// Reveal every occupied opponent seat's real hand (the actual
 		// "cheat" -- dominoes are normally played with hidden opponent

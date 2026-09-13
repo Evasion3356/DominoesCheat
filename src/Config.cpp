@@ -90,9 +90,9 @@ namespace
 		Config::Values defaults;
 		auto& general = ini.sections["General"];
 		auto& advisor = ini.sections["Advisor"];
-		g_values.AdvisorRuntime = Config::ParseRuntimePreset(GetOr(advisor, "Runtime",
-			std::string(Config::RuntimePresetName(defaults.AdvisorRuntime))));
-		advisor["Runtime"] = Config::RuntimePresetName(g_values.AdvisorRuntime);
+		g_values.AdvisorWallClockBudgetMs = Config::ClampWallClockBudgetMs(
+			GetOr(advisor, "WallClockBudget", defaults.AdvisorWallClockBudgetMs));
+		advisor["WallClockBudget"] = std::to_string(g_values.AdvisorWallClockBudgetMs);
 
 		g_values.ShowOpponentHands = GetOr(general, "ShowOpponentHands", defaults.ShowOpponentHands);
 		g_values.ShowBoneyardPrediction = GetOr(general, "ShowBoneyardPrediction", defaults.ShowBoneyardPrediction);
@@ -162,9 +162,9 @@ namespace
 				Log::Write("Config::Reload -- failed to open {} for writing", NarrowPath(ResolveIniPath()));
 		}
 
-		Log::Write("Config::Reload -- loaded from {} (ShowOpponentHands={} ShowBoneyardPrediction={} AdvisorRuntime={} / {} ms)",
+		Log::Write("Config::Reload -- loaded from {} (ShowOpponentHands={} ShowBoneyardPrediction={} AdvisorWallClockBudgetMs={})",
 			NarrowPath(ResolveIniPath()), g_values.ShowOpponentHands, g_values.ShowBoneyardPrediction,
-			Config::RuntimePresetName(g_values.AdvisorRuntime), Config::RuntimeMilliseconds(g_values.AdvisorRuntime));
+			g_values.AdvisorWallClockBudgetMs);
 	}
 }
 
