@@ -1,4 +1,10 @@
 /*
+	Current scheduling: configurable wall-clock runtime, progressive
+	completed-depth publication, and generation cancellation. Identical
+	pending/running/completed jobs are deduplicated. Production no longer
+	uses the historical node cap mentioned in the original incident notes
+	below. The caller cancels work outside the player's decision window.
+
 	Runs DominoSearch::FindBestMove() on a dedicated background thread so
 	the game's own ScriptMain thread never blocks on it -- added
 	2026-09-13 after the synchronous version froze the game (see
@@ -170,6 +176,7 @@ public:
 	struct Published
 	{
 		bool valid = false; // false until the worker has published its first result ever
+		bool finished = false;
 		Key key{};
 		DominoSearch::Recommendation rec;
 	};
@@ -181,6 +188,7 @@ public:
 		{
 			std::lock_guard<std::mutex> lock(m_jobMutex);
 			m_shuttingDown = true;
+			m_generation.fetch_add(1, std::memory_order_relaxed);
 		}
 		m_jobCv.notify_all();
 		if (!m_worker.joinable())
@@ -228,26 +236,45 @@ public:
 		m_testDelayMs.store(delay.count(), std::memory_order_relaxed);
 	}
 
+	int Testing_JobsStarted() const { return m_jobsStarted.load(std::memory_order_relaxed); }
+
 	AsyncMoveAdvisor(const AsyncMoveAdvisor&) = delete;
 	AsyncMoveAdvisor& operator=(const AsyncMoveAdvisor&) = delete;
 
-	// Non-blocking. Overwrites any not-yet-started pending job -- only
-	// the LATEST real decision matters, so an older queued-but-not-yet-
-	// picked-up job is simply replaced. Skips the resubmission entirely
-	// if an identical job is already pending or already the one most
-	// recently published, since the caller (DetermineBestMove()) calls
-	// this every tick until a matching result shows up.
-	void SubmitJob(const Key& key, const DominoSearch::GameState& state, int mySeat, int maxDepth)
+	// Deduplicate pending, running AND completed requests. A new request
+	// cancels the old generation and replaces any queued work.
+	void SubmitJob(const Key& key, const DominoSearch::GameState& state, int mySeat, int maxDepth,
+		std::chrono::milliseconds runtime = std::chrono::milliseconds(1000))
 	{
 		std::lock_guard<std::mutex> lock(m_jobMutex);
-		if (m_hasPendingJob && m_pendingKey == key)
+		if (m_hasRequest && m_pendingKey == key && m_pendingState == state &&
+			m_pendingSeat == mySeat && m_pendingDepth == maxDepth && m_pendingRuntime == runtime)
 			return;
+		m_generation.fetch_add(1, std::memory_order_relaxed);
 		m_pendingKey = key;
 		m_pendingState = state;
 		m_pendingSeat = mySeat;
 		m_pendingDepth = maxDepth;
+		m_pendingRuntime = runtime;
 		m_hasPendingJob = true;
+		m_hasRequest = true;
+		{
+			std::lock_guard<std::mutex> resultLock(m_resultMutex);
+			m_latest = Published{};
+		}
 		m_jobCv.notify_one();
+	}
+
+	void Cancel()
+	{
+		std::lock_guard<std::mutex> lock(m_jobMutex);
+		if (!m_hasRequest)
+			return;
+		m_generation.fetch_add(1, std::memory_order_relaxed);
+		m_hasRequest = false;
+		m_hasPendingJob = false;
+		std::lock_guard<std::mutex> resultLock(m_resultMutex);
+		m_latest = Published{};
 	}
 
 	// Non-blocking. Returns whatever the worker most recently finished,
@@ -269,6 +296,8 @@ private:
 			DominoSearch::GameState state;
 			int seat = -1;
 			int depth = 0;
+			std::chrono::milliseconds runtime{ 0 };
+			std::uint64_t generation = 0;
 			{
 				std::unique_lock<std::mutex> lock(m_jobMutex);
 				m_jobCv.wait(lock, [this] { return m_shuttingDown || m_hasPendingJob; });
@@ -288,26 +317,37 @@ private:
 				state = m_pendingState;
 				seat = m_pendingSeat;
 				depth = m_pendingDepth;
+				runtime = m_pendingRuntime;
+				generation = m_generation.load(std::memory_order_relaxed);
 				m_hasPendingJob = false;
 			}
+			m_jobsStarted.fetch_add(1, std::memory_order_relaxed);
 
 			// Test-only hook, zero on every real call path -- see
 			// Testing_SetArtificialJobDelay()'s own comment.
 			if (auto delayMs = m_testDelayMs.load(std::memory_order_relaxed); delayMs > 0)
 				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 
-			// The only line in this whole file that does real work --
-			// everything else is bookkeeping. Bounded by
-			// DominoSearch::kDefaultNodeBudget regardless of branching,
-			// see that constant's own comment.
-			DominoSearch::Recommendation rec = DominoSearch::FindBestMove(state, seat, depth);
-
+			auto publish = [this, &key, generation](const DominoSearch::Recommendation& rec, bool finished)
 			{
-				std::lock_guard<std::mutex> lock(m_resultMutex);
+				std::lock_guard<std::mutex> jobLock(m_jobMutex);
+				if (m_shuttingDown || generation != m_generation.load(std::memory_order_relaxed))
+					return;
+				std::lock_guard<std::mutex> resultLock(m_resultMutex);
 				m_latest.valid = true;
+				m_latest.finished = finished;
 				m_latest.key = key;
 				m_latest.rec = rec;
-			}
+			};
+			DominoSearch::SearchControl control;
+			control.deadline = std::chrono::steady_clock::now() + runtime;
+			control.generation = &m_generation;
+			control.expectedGeneration = generation;
+			control.publish = [&publish](const DominoSearch::Recommendation& rec) { publish(rec, false); };
+			// No inherited node cap: only the deadline, cancellation, or a
+			// solved position ends production evaluation.
+			auto rec = DominoSearch::FindBestMove(state, seat, depth, -1, &control);
+			publish(rec, true);
 		}
 	}
 
@@ -317,8 +357,12 @@ private:
 	DominoSearch::GameState m_pendingState;
 	int m_pendingSeat = -1;
 	int m_pendingDepth = 0;
+	std::chrono::milliseconds m_pendingRuntime{ 1000 };
 	bool m_hasPendingJob = false;
+	bool m_hasRequest = false;
 	bool m_shuttingDown = false;
+	std::atomic<std::uint64_t> m_generation{ 0 };
+	std::atomic<int> m_jobsStarted{ 0 };
 
 	std::mutex m_resultMutex;
 	Published m_latest;

@@ -17,12 +17,49 @@
 
 #pragma once
 
+#include <cctype>
 #include <string>
 
 namespace Config
 {
+	enum class RuntimePreset { Low, Medium, High };
+
+	inline RuntimePreset ParseRuntimePreset(std::string value)
+	{
+		for (char& c : value)
+			c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		if (value == "low")
+			return RuntimePreset::Low;
+		if (value == "high")
+			return RuntimePreset::High;
+		return RuntimePreset::Medium;
+	}
+
+	inline const char* RuntimePresetName(RuntimePreset value)
+	{
+		switch (value)
+		{
+		case RuntimePreset::Low: return "Low";
+		case RuntimePreset::High: return "High";
+		default: return "Medium";
+		}
+	}
+
+	inline int RuntimeMilliseconds(RuntimePreset value)
+	{
+		switch (value)
+		{
+		case RuntimePreset::Low: return 250;
+		case RuntimePreset::High: return 5000;
+		default: return 1000;
+		}
+	}
+
 	struct Values
 	{
+		// Wall-clock allowance per decision, used only by the worker.
+		RuntimePreset AdvisorRuntime = RuntimePreset::Medium;
+
 		// Reveal every occupied opponent seat's real hand (the actual
 		// "cheat" -- dominoes are normally played with hidden opponent
 		// tiles, same hidden-information premise poker's hole cards and

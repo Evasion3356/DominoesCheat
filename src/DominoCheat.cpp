@@ -554,6 +554,14 @@ namespace DominoCheat
 		ScriptLocal TableLocal(rage::scrThread* thread) { return ScriptLocal(thread, kTableSlot); }
 		ScriptLocal RoundLocal(rage::scrThread* thread) { return TableLocal(thread).At(7); } // Table.f_7 -- Round
 		ScriptLocal SeatsHolderLocal(rage::scrThread* thread) { return RoundLocal(thread).At(14); } // Round.f_14 -- SeatsHolder
+
+		DominoAiPolicy::Rules ReadAiRules(rage::scrThread* thread)
+		{
+			// func_168 passes Round.f_666.f_3 to func_352; func_614 maps
+			// the scoring hashes. Plain scalar fields, no array headers.
+			// Statically traced in build 1491.50; not yet live-confirmed.
+			return DominoAiPolicy::DecodeRules(RoundLocal(thread).At(666).At(3).AsInt32());
+		}
 	}
 
 	constexpr std::uint32_t kSeatsArrayFieldOffset = 149; // SeatsHolder.f_149[seat] -- bracket-indexed in the decompile, header CONFIRMED LIVE (reads kMaxSeats)
@@ -950,6 +958,55 @@ namespace DominoCheat
 			return written;
 		}
 
+#ifdef _DEBUG
+		void LogOpponentPredictions(rage::scrThread* thread, int mySeat)
+		{
+			const auto rules = ReadAiRules(thread);
+			Log::Write("Scripted AI: rules={} policy={} (current board only; not after your hypothetical move)",
+				DominoAiPolicy::RulesName(rules), DominoAiPolicy::AlwaysUsesPipPriority(rules)
+					? "highest pip; search retains native-order ties" : "scoring/native-board dependent; search remains conservative");
+			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+			{
+				if (static_cast<int>(seat) == mySeat || SeatLocal(thread, seat).At(kSeatOccupancyOffset).AsInt32() != static_cast<int>(seat))
+					continue;
+				int handCount = SeatLocal(thread, seat).At(kSeatHandCountOffset).AsInt32();
+				if (handCount <= 0 || handCount > static_cast<int>(kMaxHandCapacity))
+					continue;
+				std::array<DominoHandEval::Tile, kMaxHandCapacity> hand{};
+				for (int i = 0; i < handCount; i++)
+					hand[i] = ReadHandTile(thread, seat, static_cast<std::uint32_t>(i));
+				void* handPtr = GamePointers::GetScriptLocalAddress(thread, SeatLocal(thread, seat).At(kSeatHandArrayFieldOffset).Index());
+				if (!handPtr)
+					continue;
+				std::array<std::int64_t, 1 + kCandidateCapacity * kCandidateStride> buffer{};
+				buffer[0] = kCandidateCapacity;
+				for (std::uint32_t i = 0; i < kCandidateCapacity; i++)
+					buffer[1 + i * kCandidateStride + 3] = -1; // func_612's placement sentinel
+				int count = MINIGAME::_FIND_PLAYABLE_HAND_TILES(reinterpret_cast<Any*>(handPtr), reinterpret_cast<Any*>(buffer.data()));
+				if (count < 0 || count > static_cast<int>(kCandidateCapacity))
+					continue;
+				std::array<DominoAiPolicy::Candidate, kCandidateCapacity> candidates{};
+				for (int i = 0; i < count; i++)
+				{
+					std::size_t offset = 1 + static_cast<std::size_t>(i) * kCandidateStride;
+					candidates[i] = { static_cast<int>(buffer[offset]), buffer[offset + 1] != 0 || buffer[offset + 2] != 0,
+						static_cast<int>(buffer[offset + 4]) };
+				}
+				int chosen = DominoAiPolicy::SelectCandidate(rules, hand.data(), handCount, candidates.data(), count);
+				if (chosen < 0)
+				{
+					Log::Write("  seat {}: no supported native candidate (may need to draw/pass)", seat);
+					continue;
+				}
+				const auto& choice = candidates[chosen];
+				const auto& tile = hand[choice.handIndex];
+				Log::Write("  seat {}: nativeCandidate={} handIndex={} tile=[{}|{}] resultingEndTotal={} scoringPoints={}",
+					seat, chosen, choice.handIndex, tile.low, tile.high, choice.resultingEndTotal,
+					DominoAiPolicy::ScoringPoints(rules, choice.resultingEndTotal));
+			}
+		}
+#endif
+
 		bool IsHandIndexPlayable(const std::int32_t* playableIndices, std::uint32_t playableCount, std::int32_t handIndex)
 		{
 			for (std::uint32_t i = 0; i < playableCount; i++)
@@ -1246,36 +1303,35 @@ namespace DominoCheat
 			return moves;
 		}
 
-		// Cheap, comparable snapshot of "what real-world decision is this
-		// for" -- the freshness key AsyncMoveAdvisor<DecisionKey> uses to
-		// decide whether a published background result still answers the
-		// CURRENT decision, or is left over from an earlier hand/board
-		// state. Only compares up to handCount/endCount -- slots beyond
-		// those are always default-constructed (Tile{-1,-1}/0)
-		// identically every time they're built, so comparing them too
-		// would be redundant, not incorrect.
+		// Advice is fresh only if ALL search inputs still match, including
+		// opponents' hands when our hand and the open pip set are unchanged.
 		struct DecisionKey
 		{
 			std::int32_t seat = -1;
-			std::int32_t handCount = -1;
 			std::int32_t deckCursor = -1;
-			std::uint32_t endCount = 0;
-			std::array<std::int32_t, 7> ends{};
-			std::array<DominoHandEval::Tile, kMaxHandCapacity> hand{};
+			int runtimeMs = 1000;
+			DominoSearch::GameState state;
 
 			bool operator==(const DecisionKey& o) const
 			{
-				if (seat != o.seat || handCount != o.handCount || deckCursor != o.deckCursor || endCount != o.endCount)
-					return false;
-				for (std::uint32_t i = 0; i < endCount; i++)
-					if (ends[i] != o.ends[i])
-						return false;
-				for (std::int32_t i = 0; i < handCount; i++)
-					if (!(hand[i].low == o.hand[i].low && hand[i].high == o.hand[i].high))
-						return false;
-				return true;
+				return seat == o.seat && deckCursor == o.deckCursor && runtimeMs == o.runtimeMs && state == o.state;
 			}
 		};
+
+		AsyncMoveAdvisor<DecisionKey>* g_moveAdvisor = nullptr;
+
+		AsyncMoveAdvisor<DecisionKey>& MoveAdvisor()
+		{
+			static AsyncMoveAdvisor<DecisionKey> advisor;
+			g_moveAdvisor = &advisor;
+			return advisor;
+		}
+
+		void CancelMoveAdvice()
+		{
+			if (g_moveAdvisor)
+				g_moveAdvisor->Cancel();
+		}
 
 		// Depth-limited paranoid minimax (DominoSearch.h) over every
 		// seat's REAL hand -- see that header's own file comment for the
@@ -1310,22 +1366,26 @@ namespace DominoCheat
 		// this function itself never blocks on the search at all
 		// anymore. The tradeoff: the very first tick (or two) of a new
 		// decision shows no recommendation yet, until the worker
-		// publishes a matching result -- an unnoticeable gap against a
-		// human decision (low milliseconds, bounded by
-		// DominoSearch::kDefaultNodeBudget), and deliberately never a
-		// stale one for a hand that's already moved on.
+		// publishes a matching result. The worker publishes each complete
+		// depth, refining advice within the configured wall-clock allowance.
 		MoveRecommendation DetermineBestMove(rage::scrThread* thread, std::uint32_t mySeatU)
 		{
 			MoveRecommendation best;
 			std::int32_t mySeat = static_cast<std::int32_t>(mySeatU);
+			const auto& cfg = Config::Get();
+			if (mySeatU >= kMaxSeats || RoundLocal(thread).At(kCurrentTurnSeatFieldOffset).AsInt32() != mySeat ||
+				RoundLocal(thread).At(kTurnSubStateFieldOffset).AsInt32() != 4 || (!cfg.ShowAdvice && !cfg.ShowPlayableDomino))
+			{
+				CancelMoveAdvice();
+				return best;
+			}
 
 			std::int32_t myHandCount = SeatLocal(thread, mySeatU).At(kSeatHandCountOffset).AsInt32();
-			if (myHandCount < 0)
-				myHandCount = 0;
-			if (myHandCount > static_cast<std::int32_t>(kMaxHandCapacity))
-				myHandCount = static_cast<std::int32_t>(kMaxHandCapacity);
-			if (myHandCount == 0)
+			if (myHandCount <= 0 || myHandCount > static_cast<std::int32_t>(kMaxHandCapacity))
+			{
+				CancelMoveAdvice();
 				return best;
+			}
 
 			std::array<DominoHandEval::Tile, kMaxHandCapacity> myHand{};
 			for (std::int32_t i = 0; i < myHandCount; i++)
@@ -1339,6 +1399,7 @@ namespace DominoCheat
 
 			if (!allHandsKnown || endCount == 0)
 			{
+				CancelMoveAdvice();
 				std::vector<CandidateMove> moves = LocalLegalMovesFromHand(myHand.data(), myHandCount, ends.data(), endCount);
 				if (moves.empty())
 					return best;
@@ -1389,14 +1450,51 @@ namespace DominoCheat
 			// published a result for this EXACT decision.
 			DecisionKey key;
 			key.seat = mySeat;
-			key.handCount = myHandCount;
 			key.deckCursor = deckCursor;
-			key.endCount = endCount;
-			key.ends = ends;
-			key.hand = myHand;
+			key.runtimeMs = Config::RuntimeMilliseconds(cfg.AdvisorRuntime);
+			DominoSearch::GameState& state = key.state;
+			state.rules = ReadAiRules(thread);
+			int totalTiles = 0;
+			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+			{
+				ScriptLocal seatLocal = SeatLocal(thread, seat);
+				std::int32_t occupancyMarker = seatLocal.At(kSeatOccupancyOffset).AsInt32();
+				if (occupancyMarker != static_cast<std::int32_t>(seat))
+					continue;
 
-			static AsyncMoveAdvisor<DecisionKey> g_advisor;
-			AsyncMoveAdvisor<DecisionKey>::Published published = g_advisor.GetLatest();
+				state.occupied[seat] = true;
+				bool isMe = (static_cast<std::int32_t>(seat) == mySeat);
+				std::int32_t handCount = isMe ? myHandCount : seatLocal.At(kSeatHandCountOffset).AsInt32();
+				if (handCount <= 0 || handCount > static_cast<std::int32_t>(kMaxHandCapacity) ||
+					handCount > static_cast<std::int32_t>(DominoSearch::kMaxHandTiles))
+				{
+					CancelMoveAdvice();
+					return best;
+				}
+
+				for (std::int32_t i = 0; i < handCount; i++)
+				{
+					DominoHandEval::Tile tile = isMe ? myHand[i] : ReadHandTile(thread, seat, static_cast<std::uint32_t>(i));
+					if (!tile.IsValid())
+					{
+						CancelMoveAdvice();
+						return best; // Do not search a partial read or shift live hand indices.
+					}
+					state.hands[seat][i] = tile;
+				}
+				state.handCounts[seat] = handCount;
+				totalTiles += handCount;
+			}
+			for (std::uint32_t ei = 0; ei < endCount; ei++)
+				state.ends.pips[static_cast<std::size_t>(state.ends.count++)] = ends[ei];
+			state.turnSeat = mySeat;
+
+			// Finite game-tree bound, not an eight-ply policy limit. The
+			// configured deadline controls how far iterative deepening gets.
+			int maxSearchDepth = (totalTiles + 1) * DominoSearch::detail::OccupiedCount(state);
+			auto& advisor = MoveAdvisor();
+			advisor.SubmitJob(key, state, mySeat, maxSearchDepth, std::chrono::milliseconds(key.runtimeMs));
+			AsyncMoveAdvisor<DecisionKey>::Published published = advisor.GetLatest();
 			if (published.valid && published.key == key)
 			{
 				const DominoSearch::Recommendation& rec = published.rec;
@@ -1417,49 +1515,7 @@ namespace DominoCheat
 				return best;
 			}
 
-			// No fresh answer yet for this exact decision -- submit it
-			// (non-blocking) and report nothing THIS tick rather than a
-			// stale recommendation for a hand that may no longer match.
-			DominoSearch::GameState state;
-			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
-			{
-				ScriptLocal seatLocal = SeatLocal(thread, seat);
-				std::int32_t occupancyMarker = seatLocal.At(kSeatOccupancyOffset).AsInt32();
-				if (occupancyMarker != static_cast<std::int32_t>(seat))
-					continue;
-
-				state.occupied[seat] = true;
-				bool isMe = (static_cast<std::int32_t>(seat) == mySeat);
-				std::int32_t handCount = isMe ? myHandCount : seatLocal.At(kSeatHandCountOffset).AsInt32();
-				if (handCount < 0)
-					handCount = 0;
-				if (handCount > static_cast<std::int32_t>(kMaxHandCapacity))
-					handCount = static_cast<std::int32_t>(kMaxHandCapacity);
-				if (handCount > static_cast<std::int32_t>(DominoSearch::kMaxHandTiles))
-					handCount = static_cast<std::int32_t>(DominoSearch::kMaxHandTiles);
-
-				for (std::int32_t i = 0; i < handCount; i++)
-				{
-					DominoHandEval::Tile tile = isMe ? myHand[i] : ReadHandTile(thread, seat, static_cast<std::uint32_t>(i));
-					if (tile.IsValid())
-						state.hands[seat][static_cast<std::size_t>(state.handCounts[seat]++)] = tile;
-				}
-			}
-			for (std::uint32_t ei = 0; ei < endCount; ei++)
-				state.ends.pips[static_cast<std::size_t>(state.ends.count++)] = ends[ei];
-			state.turnSeat = mySeat;
-
-			// 8 plies ~= two full round-robins in a 4-seat game --
-			// chosen as a starting budget balancing look-ahead depth
-			// against node count for typical mid-round hand sizes (3-7
-			// legal-move branching); worth raising once endgame hands
-			// are small. Worst-case wall-clock (now on the background
-			// thread, never this one) is bounded by
-			// DominoSearch::kDefaultNodeBudget regardless of what
-			// depth/branching produce -- see that constant's own
-			// comment.
-			constexpr int kMaxSearchDepth = 8;
-			g_advisor.SubmitJob(key, state, mySeat, kMaxSearchDepth);
+			// No result for this decision yet; never display stale advice.
 			return best;
 		}
 
@@ -1969,7 +2025,8 @@ namespace DominoCheat
 					DrawLine(x, y, line.str().c_str());
 					y += lineHeight;
 
-					if (isMySeat && debugTurnSeat == static_cast<std::int32_t>(seat))
+					if (isMySeat && debugTurnSeat == static_cast<std::int32_t>(seat) && turnSubState == 4 &&
+						(cfg.ShowAdvice || cfg.ShowPlayableDomino))
 					{
 						MoveRecommendation rec = DetermineBestMove(thread, seat);
 						if (rec.valid)
@@ -2079,11 +2136,23 @@ namespace DominoCheat
 	void OnTick()
 	{
 		if (!Enabled)
+		{
+			CancelMoveAdvice();
 			return;
+		}
 
 		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
 		if (!thread)
+		{
+			CancelMoveAdvice();
 			return;
+		}
+
+		const auto& cfg = Config::Get();
+		int mySeat = FindMySeatByPed(thread);
+		if (mySeat < 0 || RoundLocal(thread).At(kCurrentTurnSeatFieldOffset).AsInt32() != mySeat ||
+			RoundLocal(thread).At(kTurnSubStateFieldOffset).AsInt32() != 4 || (!cfg.ShowAdvice && !cfg.ShowPlayableDomino))
+			CancelMoveAdvice();
 
 		DrawOverlay(thread);
 	}
@@ -2279,10 +2348,11 @@ namespace DominoCheat
 			return;
 		}
 
+		LogOpponentPredictions(thread, mySeat);
 		MoveRecommendation rec = DetermineBestMove(thread, static_cast<std::uint32_t>(mySeat));
 		if (!rec.valid)
 		{
-			Log::Write("DominoCheat::ProbeBestMove: mySeat={} -- no recommendation (no legal move found)", mySeat);
+			Log::Write("DominoCheat::ProbeBestMove: mySeat={} -- no player recommendation yet (inactive turn, pending search, or no legal move)", mySeat);
 			return;
 		}
 

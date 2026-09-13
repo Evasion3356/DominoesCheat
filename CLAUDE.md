@@ -485,6 +485,97 @@ Exits 0 and prints `ALL PASS` if every case passes; nonzero with a
   it never rendered in Release anyway and stays Debug-only now (see
   `DrawOverlay()`'s own comment).
 
+## Scripted opponent policy (build 1491.50)
+
+The supplied `dominoes_sp.ysc.c` exposes a deterministic move-selection
+path: `func_76` invokes `func_168`, which uses `func_352`, then falls back
+to `func_353`. The opening path in `func_351` uses the same selectors.
+There is no RNG call on this selection path (the script does use RNG
+elsewhere, including shuffling and presentation).
+
+- `func_352` (lines 14761-14798) chooses the largest nonzero scoring
+  resulting-end total. `func_614` (23907-23931) recognizes multiples of
+  five or three according to the table rule.
+- `func_353` (14800-14835) falls back to the highest tile pip sum, using
+  `func_615` (23933-23936).
+- Both selectors replace the winner on equal rank: the **last valid
+  native candidate** wins. A scoring tie does not use tile pips as a
+  secondary criterion. `func_613` requires a valid hand index and a
+  nonzero placement descriptor (candidate words f_1/f_2).
+- `func_324` (14062 onward) advances seats in the order **0, 2, 1, 3**,
+  skipping unoccupied seats. The old numerical-order simulation was
+  incorrect for multi-opponent games and has been corrected.
+
+`src/DominoAiPolicy.h` implements the selector independently of game
+memory. Live snapshots read the rule from `Round.f_666.f_3`, exactly the
+chain passed to `func_352` by `func_168`. IDs: Block=-1617663169,
+Draw=-1360983891, All Threes=-382896522, All Fives=-1234859967.
+This new field read is statically traced but not yet live-confirmed.
+
+With known hands and an empty boneyard, Block/Draw search now excludes
+lower-pip NPC replies. It still searches **all equal-ranked placements**
+adversarially: our generated move order is not evidence of native order.
+If the generated candidate count exceeds the native's 15-entry capacity,
+the policy filter is not applied. Unknown modes and All Threes/Fives keep
+the conservative opponent model in future search because their exact
+resulting-end totals cannot be computed from a set of distinct open pips.
+No guessed end sum or guessed native tie-break is used to claim a win.
+
+Debug F12 -> **Probe Best Move** additionally logs each opponent's choice
+from the current native candidate list, including hand index, tile,
+candidate index, and scoring total. These are **current-board-only**
+predictions: after the player places a tile, native candidates and totals
+can change. The read-only native is called only on ScriptMain. No native
+placement/commit call is made, and the supplied decompiled file is not
+modified.
+
+Regression tests cover native-order ties, scoring/fallback selection,
+candidate validity, every occupied-seat layout, and generated small
+endgames against an independent exhaustive policy solver. Prediction
+quality is still conditional on the existing board abstraction; live
+comparison of logged candidates with actual NPC moves remains necessary.
+
+## Advisor runtime
+
+`DominoCheat.ini`, next to the ASI, now has an `[Advisor]` section with
+`Runtime=Medium`. Supported presets are case-insensitive:
+
+| Runtime | Maximum wall-clock allowance per decision |
+| --- | --- |
+| Low | 250 ms |
+| Medium (default) | 1000 ms |
+| High | 5000 ms |
+
+Missing or invalid values normalize to Medium. Use the Debug F12 menu's
+Reload Config action after editing; Release loads settings when the mod
+loads (restart/reload the mod to apply edits).
+
+The worker publishes an initial fallback and each completed search depth
+while refining advice. It stops on a solved position, deadline, or
+cancellation; incomplete iterations never replace completed advice.
+Runtime is elapsed wall-clock time starting when the worker begins the
+search, excluding queue time. Deadlines are cooperative, not hard
+real-time guarantees under OS scheduling.
+
+Production no longer uses the inherited 100,000-node or eight-ply caps.
+It deepens toward a finite game-tree bound within the selected allowance.
+The node-budget API remains for deterministic standalone tests only.
+Identical pending, running, or completed decisions are not restarted every
+frame. A changed position or runtime cancels/replaces the old job.
+
+Evaluation runs only during the player's confirmed decision window
+(`turnSeat == mySeat`, `turnSubState == 4`) with at least one advice display
+enabled. Turn end, table exit, disabling the mod/advice, or invalid hand
+reads cancel current work and clear published advice. The worker sleeps
+between requests; it does not speculate during opponents' turns. Search
+also cooperatively cancels during worker teardown. All game-memory reads
+remain on ScriptMain; only immutable snapshots cross to the worker.
+
+The existing distinct-open-pip board approximation, unmodeled draws, and
+scoring-variant limitations remain unchanged. Runtime presets and worker
+lifecycle have standalone regression coverage; live game testing is still
+needed. Older session notes describe the superseded node-capped worker.
+
 ## External resources
 
 - `D:\Backup\Stuff\RDR2 Shit\Scripts\rdr2-scripts-decompiled\1491.50\script_rel\dominoes_sp.ysc.c`

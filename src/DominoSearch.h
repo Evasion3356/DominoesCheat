@@ -1,4 +1,13 @@
 /*
+	Current production scheduling: deadline-controlled iterative deepening
+	with cooperative cancellation and completed-depth publication. The
+	background worker disables the historical node cap described below;
+	standalone tests still use it for deterministic interruption coverage.
+	Opponent branches now follow the verified highest-pip policy for
+	Block/Draw, retaining unknown native-order ties. Scoring/unknown modes
+	remain paranoid until exact native board totals can be simulated.
+	Turn advancement follows the script's 0 -> 2 -> 1 -> 3 seat cycle.
+
 	Depth-limited minimax over FULLY KNOWN hands -- pure-logic header, zero
 	game-memory dependency, same "pure math header, unit tested in
 	isolation" convention as DominoHandEval.h (see
@@ -40,8 +49,8 @@
 	comment) so this file is only invoked once per REAL decision, not
 	once per frame; (2) this file now uses fixed-capacity arrays
 	everywhere (zero heap allocations anywhere in the search) and a hard
-	`nodeBudget` that Search() decrements on every call, returning early
-	once exhausted -- a worst-case-bounded fallback answer instead of
+	`nodeBudget` for nonterminal Search() visits. Iterative deepening
+	keeps the last complete iteration when exhausted -- a bounded answer instead of
 	worst-case-unbounded exact search, regardless of how bad branching
 	gets.
 
@@ -84,11 +93,15 @@
 #pragma once
 
 #include "DominoHandEval.h"
+#include "DominoAiPolicy.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 
 namespace DominoSearch
@@ -143,8 +156,24 @@ namespace DominoSearch
 		std::array<int, kMaxSeats> handCounts{};
 		std::array<bool, kMaxSeats> occupied{};
 		OpenEnds ends;
+		DominoAiPolicy::Rules rules = DominoAiPolicy::Rules::Unknown;
 		int turnSeat = 0;
 		int passStreak = 0; // consecutive passes across occupied seats -- == occupied count means the round is blocked
+
+		bool operator==(const GameState& other) const
+		{
+			if (occupied != other.occupied || handCounts != other.handCounts || rules != other.rules ||
+				turnSeat != other.turnSeat || passStreak != other.passStreak || ends.count != other.ends.count)
+				return false;
+			for (int e = 0; e < ends.count; e++)
+				if (ends.pips[e] != other.ends.pips[e])
+					return false;
+			for (int s = 0; s < kMaxSeats; s++)
+				for (int i = 0; i < handCounts[s]; i++)
+					if (hands[s][i].low != other.hands[s][i].low || hands[s][i].high != other.hands[s][i].high)
+						return false;
+			return true;
+		}
 	};
 
 	struct Move
@@ -185,16 +214,25 @@ namespace DominoSearch
 		std::int32_t resultPip = -1;
 		bool isWinningMove = false;
 		std::int32_t score = 0; // raw minimax value, for diagnostics only -- not a pip/tile count
+		int completedDepth = 0; // last fully evaluated root iteration; zero means the static fallback
 	};
 
-	// Hard cap on total Search() calls within one FindBestMove() --
-	// bounds worst-case wall-clock regardless of how bad branching gets,
-	// see file header comment for why this exists. 100k plain-array
-	// node visits (no heap allocation anywhere in the loop, see above)
-	// runs in low-single-digit milliseconds even unoptimized; picked as
-	// a budget that's generous for real board branching (typically 2-5)
-	// while still being a hard, predictable ceiling. NOT yet profiled
-	// against a real frame-time budget.
+	struct SearchControl
+	{
+		std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max();
+		const std::atomic<std::uint64_t>* generation = nullptr;
+		std::uint64_t expectedGeneration = 0;
+		std::function<void(const Recommendation&)> publish;
+
+		bool Stopped() const
+		{
+			return (generation && generation->load(std::memory_order_relaxed) != expectedGeneration) ||
+				std::chrono::steady_clock::now() >= deadline;
+		}
+	};
+
+	// Deterministic budget for standalone callers/tests. The live worker
+	// uses -1 (no node cap) with a deadline and cancellation generation.
 	constexpr int kDefaultNodeBudget = 100'000;
 
 	namespace detail
@@ -220,9 +258,12 @@ namespace DominoSearch
 
 		inline int NextSeat(const GameState& state, int fromSeat)
 		{
+			// func_324: 0 -> 2 -> 1 -> 3 -> 0, skipping unoccupied seats.
+			static constexpr std::array<int, kMaxSeats> successor{ 2, 3, 1, 0 };
+			int candidate = fromSeat;
 			for (int step = 1; step <= kMaxSeats; step++)
 			{
-				int candidate = (fromSeat + step) % kMaxSeats;
+				candidate = successor[candidate];
 				if (state.occupied[candidate])
 					return candidate;
 			}
@@ -262,6 +303,12 @@ namespace DominoSearch
 				for (int e = 0; e < state.ends.count; e++)
 				{
 					std::int32_t endPip = state.ends.pips[e];
+					bool duplicate = false;
+					for (int previous = 0; previous < e; previous++)
+						if (state.ends.pips[previous] == endPip)
+							duplicate = true;
+					if (duplicate)
+						continue;
 					if (tile.low != endPip && tile.high != endPip)
 						continue;
 
@@ -274,6 +321,26 @@ namespace DominoSearch
 				}
 			}
 			return moves;
+		}
+
+		inline MoveList OpponentMoves(const GameState& state, int seat)
+		{
+			MoveList legal = LegalMoves(state, seat);
+			// Scoring modes need the native's exact resulting end totals.
+			// Never substitute a sum of distinct pip values for those totals.
+			// Also avoid predicting a truncated native list (capacity 15).
+			if (!DominoAiPolicy::AlwaysUsesPipPriority(state.rules) || legal.count > 15)
+				return legal;
+			int highestPips = -1;
+			for (const Move& move : legal)
+				highestPips = std::max(highestPips, move.tile.PipTotal());
+			MoveList plausible;
+			for (const Move& move : legal)
+				if (move.tile.PipTotal() == highestPips)
+					plausible.Push(move);
+			// The script selects the last native candidate among ties, but
+			// simulated move order is not native order. Keep all such ties.
+			return plausible;
 		}
 
 		inline GameState ApplyMove(const GameState& state, int seat, const Move& move)
@@ -299,39 +366,61 @@ namespace DominoSearch
 			return next;
 		}
 
-		// Paranoid two-player-equivalent minimax with alpha-beta pruning:
-		// maximizes on mySeat's own turn, minimizes on every OTHER
-		// seat's turn (see file header comment for why treating all
-		// three opponents as one adversary is the safe choice absent a
-		// known opponent policy). `depth` counts PLIES (one seat's
-		// single turn or pass), not full round-robins. `nodeBudget` is
-		// decremented once per call and shared across the WHOLE search
-		// (not reset per branch) -- once it hits zero every further call
-		// short-circuits to the same heuristic a depth cutoff would use,
-		// giving a hard, predictable ceiling on total work independent
-		// of how bad branching gets (see file header comment).
-		inline std::int32_t Search(const GameState& state, int mySeat, int depth, std::int32_t alpha, std::int32_t beta, int& nodeBudget)
+		// Terminal outcomes must dominate all nonterminal pip estimates.
+		// Remaining depth is larger for an earlier win (or earlier loss).
+		inline bool TerminalScore(const GameState& state, int mySeat, int depth, std::int32_t& score)
 		{
-			if (--nodeBudget <= 0)
-				return EvaluateBlocked(state, mySeat);
-
 			if (state.handCounts[mySeat] == 0)
-				return kWinScore - depth; // I already went out -- prefer the shallowest win among equal alternatives
+			{
+				score = kWinScore + depth;
+				return true;
+			}
 			for (int s = 0; s < kMaxSeats; s++)
 			{
 				if (state.occupied[s] && s != mySeat && state.handCounts[s] == 0)
-					return -kWinScore + depth; // someone else went out
+				{
+					score = -kWinScore - depth;
+					return true;
+				}
 			}
 			if (state.passStreak >= OccupiedCount(state))
-				return EvaluateBlocked(state, mySeat);
-			if (depth <= 0)
-				return EvaluateBlocked(state, mySeat); // heuristic stand-in: "who'd win if it blocked right here"
+			{
+				const auto margin = EvaluateBlocked(state, mySeat);
+				score = margin > 0 ? kWinScore + depth : (margin < 0 ? -kWinScore - depth : 0);
+				return true;
+			}
+			return false;
+		}
 
-			MoveList moves = LegalMoves(state, state.turnSeat);
+		// Alpha-beta over player choices and policy-consistent opponent
+		// replies. Unknown policy/placement details remain adversarial.
+		// Interrupted iterations never publish partial bounds as exact scores.
+		inline std::int32_t Search(const GameState& state, int mySeat, int depth, std::int32_t alpha, std::int32_t beta, int& nodeBudget, bool& complete, const SearchControl* control = nullptr)
+		{
+			if (control && control->Stopped())
+			{
+				complete = false;
+				return 0;
+			}
+			std::int32_t terminal = 0;
+			if (TerminalScore(state, mySeat, depth, terminal))
+				return terminal;
+			if (nodeBudget == 0)
+			{
+				complete = false;
+				return 0;
+			}
+			if (nodeBudget > 0)
+				nodeBudget--;
+			if (depth <= 0)
+				return EvaluateBlocked(state, mySeat);
+
+			MoveList moves = state.turnSeat == mySeat
+				? LegalMoves(state, state.turnSeat) : OpponentMoves(state, state.turnSeat);
 			if (moves.Empty())
 			{
 				GameState next = ApplyPass(state, state.turnSeat);
-				return Search(next, mySeat, depth - 1, alpha, beta, nodeBudget);
+				return Search(next, mySeat, depth - 1, alpha, beta, nodeBudget, complete, control);
 			}
 
 			bool maximizing = (state.turnSeat == mySeat);
@@ -341,7 +430,9 @@ namespace DominoSearch
 			for (const Move& mv : moves)
 			{
 				GameState next = ApplyMove(state, state.turnSeat, mv);
-				std::int32_t value = Search(next, mySeat, depth - 1, alpha, beta, nodeBudget);
+				std::int32_t value = Search(next, mySeat, depth - 1, alpha, beta, nodeBudget, complete, control);
+				if (!complete)
+					return 0;
 
 				if (maximizing)
 				{
@@ -355,8 +446,6 @@ namespace DominoSearch
 				}
 				if (alpha >= beta)
 					break; // prune -- the other side already has a better option elsewhere
-				if (nodeBudget <= 0)
-					break; // budget exhausted mid-loop -- stop exploring further siblings too
 			}
 			return best;
 		}
@@ -367,13 +456,15 @@ namespace DominoSearch
 	// builds `state` from live-read hands + DetermineOpenEnds() and calls
 	// this once per REAL decision (memoized there, see its own comment --
 	// this function must never be called once per frame). `maxDepth` is
-	// in plies (one seat's move each); `nodeBudget` bounds total work
-	// regardless of depth/branching (see kDefaultNodeBudget's own
-	// comment).
-	inline Recommendation FindBestMove(const GameState& state, int mySeat, int maxDepth, int nodeBudget = kDefaultNodeBudget)
+	// in plies (one seat's move each). A negative nodeBudget disables the
+	// node cap; the live worker supplies a timed, cancellable control.
+	inline Recommendation FindBestMove(const GameState& state, int mySeat, int maxDepth, int nodeBudget = kDefaultNodeBudget, const SearchControl* control = nullptr)
 	{
 		Recommendation best;
-		if (mySeat < 0 || mySeat >= kMaxSeats || !state.occupied[mySeat] || state.handCounts[mySeat] == 0)
+		if (mySeat < 0 || mySeat >= kMaxSeats || !state.occupied[mySeat] || state.turnSeat != mySeat)
+			return best;
+		std::int32_t terminal = 0;
+		if (detail::TerminalScore(state, mySeat, 0, terminal))
 			return best;
 
 		MoveList moves = detail::LegalMoves(state, mySeat);
@@ -396,36 +487,54 @@ namespace DominoSearch
 			return best;
 		}
 
-		std::int32_t bestScore = std::numeric_limits<std::int32_t>::min();
-		std::int32_t bestPipTiebreak = -1;
-
-		for (const Move& mv : moves)
+		// Iteration zero evaluates EVERY root move without recursion, even
+		// with no budget. Deeper iterations replace it only when complete.
+		int totalTiles = 0;
+		for (int s = 0; s < kMaxSeats; s++)
+			if (state.occupied[s])
+				totalTiles += state.handCounts[s];
+		maxDepth = std::clamp(maxDepth, 0, (totalTiles + 1) * detail::OccupiedCount(state));
+		for (int iteration = 0; iteration <= maxDepth; iteration++)
 		{
-			GameState next = detail::ApplyMove(state, mySeat, mv);
-			std::int32_t score = detail::Search(next, mySeat, maxDepth - 1,
-				std::numeric_limits<std::int32_t>::min(), std::numeric_limits<std::int32_t>::max(), nodeBudget);
-
-			// Tie-break by the played tile's own pip total (highest
-			// first, matching the real game's own func_353 fallback
-			// heuristic per DominoCheat.cpp's DetermineBestMove()
-			// comment) -- purely cosmetic once the minimax score is
-			// equal; the score is always the primary ranking.
-			std::int32_t pipTotal = mv.tile.PipTotal();
-			bool better = (score > bestScore) || (score == bestScore && pipTotal > bestPipTiebreak);
-			if (better)
+			Recommendation candidate;
+			std::int32_t bestScore = std::numeric_limits<std::int32_t>::min();
+			int bestPipTiebreak = -1;
+			bool complete = true;
+			for (const Move& mv : moves)
 			{
-				bestScore = score;
-				bestPipTiebreak = pipTotal;
-				best.valid = true;
-				best.handIndex = mv.handIndex;
-				best.tile = mv.tile;
-				best.endPip = mv.endPip;
-				best.resultPip = mv.resultPip;
-				best.isWinningMove = false;
-				best.score = score;
+				GameState next = detail::ApplyMove(state, mySeat, mv);
+				std::int32_t score = 0;
+				if (iteration == 0)
+				{
+					if (!detail::TerminalScore(next, mySeat, 0, score))
+						score = detail::EvaluateBlocked(next, mySeat);
+				}
+				else
+					score = detail::Search(next, mySeat, iteration - 1,
+						std::numeric_limits<std::int32_t>::min(), std::numeric_limits<std::int32_t>::max(), nodeBudget, complete, control);
+				if (!complete)
+					break;
+				int pipTotal = mv.tile.PipTotal();
+				if (score > bestScore || (score == bestScore && pipTotal > bestPipTiebreak))
+				{
+					bestScore = score;
+					bestPipTiebreak = pipTotal;
+					candidate.valid = true;
+					candidate.handIndex = mv.handIndex;
+					candidate.tile = mv.tile;
+					candidate.endPip = mv.endPip;
+					candidate.resultPip = mv.resultPip;
+					candidate.score = score;
+					candidate.completedDepth = iteration;
+				}
 			}
-			if (nodeBudget <= 0)
-				break; // budget exhausted -- stop exploring further root moves, keep the best found so far
+			if (!complete)
+				break;
+			best = candidate;
+			if (control && control->publish)
+				control->publish(best);
+			if ((control && control->Stopped()) || nodeBudget == 0 || best.score >= detail::kWinScore || best.score <= -detail::kWinScore)
+				break;
 		}
 
 		return best;
