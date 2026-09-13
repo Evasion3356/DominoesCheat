@@ -110,6 +110,16 @@ namespace DominoCheat
 	// menu space. Wired to the F12 menu's "Probe Tile Ownership" item.
 	void ProbeTilePropOwnership();
 
+	// Diagnostic: reads Scene.f_6 (kSceneDominoSkinFieldOffset in
+	// DominoCheat.cpp -- see its own header comment for the full
+	// derivation trail), the current table's "dominos_set_N" skin
+	// index, and logs it side-by-side with whatever
+	// FindLoadedDominoSetDict() independently finds already streamed for
+	// the SAME real table. CONFIRMED LIVE (2026-09-13): read Scene.f_6=5
+	// against a real "dominos_set_6" table -- MATCH. Wired to the F12
+	// menu's "Probe Domino Skin" item.
+	void ProbeDominoSkin();
+
 	// Diagnostic: dumps EVERY script-local slot of dominoes_sp's running
 	// thread to DominoCheat_stackdump_YYYYMMDD_HHMMSS.jsonl (see
 	// GamePointers::DumpLocalStackJsonl) -- one JSON object per slot, no

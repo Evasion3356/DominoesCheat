@@ -145,6 +145,24 @@ namespace Config
 		float BoneyardX = 0.02f;
 		float BoneyardY = 0.30f;
 
+		// Real 2D tile-icon sizing/spacing for the boneyard row (same
+		// DrawBoneyardStatus(), 2026-09-13 -- replaced the plain
+		// FormatTile() text list with the same real "dominos_set_N"
+		// sprites DrawOpponentHandStatus() already draws, per user
+		// request). Defaults started as OpponentTileIcon*'s own CONFIRMED
+		// LIVE values above (same sprite asset, same aspect ratio) as a
+		// jumping-off point. LabelOffsetX is how far right of the
+		// "Boneyard (N):" text label the icon strip starts --
+		// CONFIRMED LIVE (2026-09-13, user-tuned via Reload Config
+		// against a real table): 0.035 sat the icon strip too close to
+		// the label text, 0.055 clears it. SpacingX/Width/Height not yet
+		// independently retuned for this row -- still the
+		// OpponentTileIcon* starting values.
+		float BoneyardTileIconLabelOffsetX = 0.055f;
+		float BoneyardTileIconSpacingX = 0.015f;
+		float BoneyardTileIconWidth = 0.015f;
+		float BoneyardTileIconHeight = 0.045f;
+
 		// Standalone move-advice readout position (DrawMoveAdviceStatus()/
 		// DrawMoveSafetyStatus()) -- same "rough screen-center starting
 		// point, not calibrated against anything" caveat as PokerCheat's

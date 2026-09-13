@@ -120,6 +120,10 @@ namespace
 		g_values.WorldMarkerFontSize = GetOr(hud, "WorldMarkerFontSize", defaults.WorldMarkerFontSize);
 		g_values.BoneyardX = GetOr(hud, "BoneyardX", defaults.BoneyardX);
 		g_values.BoneyardY = GetOr(hud, "BoneyardY", defaults.BoneyardY);
+		g_values.BoneyardTileIconLabelOffsetX = GetOr(hud, "BoneyardTileIconLabelOffsetX", defaults.BoneyardTileIconLabelOffsetX);
+		g_values.BoneyardTileIconSpacingX = GetOr(hud, "BoneyardTileIconSpacingX", defaults.BoneyardTileIconSpacingX);
+		g_values.BoneyardTileIconWidth = GetOr(hud, "BoneyardTileIconWidth", defaults.BoneyardTileIconWidth);
+		g_values.BoneyardTileIconHeight = GetOr(hud, "BoneyardTileIconHeight", defaults.BoneyardTileIconHeight);
 		g_values.MoveAdviceX = GetOr(hud, "MoveAdviceX", defaults.MoveAdviceX);
 		g_values.MoveAdviceY = GetOr(hud, "MoveAdviceY", defaults.MoveAdviceY);
 		SetFloat(hud, "PanelX", g_values.PanelX);
@@ -138,6 +142,10 @@ namespace
 		SetFloat(hud, "WorldMarkerFontSize", g_values.WorldMarkerFontSize);
 		SetFloat(hud, "BoneyardX", g_values.BoneyardX);
 		SetFloat(hud, "BoneyardY", g_values.BoneyardY);
+		SetFloat(hud, "BoneyardTileIconLabelOffsetX", g_values.BoneyardTileIconLabelOffsetX);
+		SetFloat(hud, "BoneyardTileIconSpacingX", g_values.BoneyardTileIconSpacingX);
+		SetFloat(hud, "BoneyardTileIconWidth", g_values.BoneyardTileIconWidth);
+		SetFloat(hud, "BoneyardTileIconHeight", g_values.BoneyardTileIconHeight);
 		SetFloat(hud, "MoveAdviceX", g_values.MoveAdviceX);
 		SetFloat(hud, "MoveAdviceY", g_values.MoveAdviceY);
 #endif

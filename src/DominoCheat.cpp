@@ -502,6 +502,7 @@
 #include "DominoCheat.h"
 #include "DominoHandEval.h"
 #include "DominoSearch.h"
+#include "AsyncMoveAdvisor.h"
 #include "Log.h"
 #include "GamePointers.h"
 #include "ScriptLocal.h"
@@ -735,6 +736,61 @@ namespace DominoCheat
 	constexpr std::uint32_t kTilePropHandleOffset = 1;
 	constexpr std::int32_t kTilePropSeatOwnerBase = 2;   // seat 0 -> bare value 2, seat 1 -> 3, etc. -- CONFIRMED LIVE
 	constexpr std::int32_t kTilePropBoardOwnerValue = 6; // CONFIRMED LIVE: an already-played tile's prop
+
+	// CONFIRMED LIVE (2026-09-13, same day) -- the current table's
+	// "dominos_set_N" skin index (0-based -- BuildDominoTileTextureName()/
+	// FindLoadedDominoSetDict()'s own N is 1-based, so the real dict name
+	// is "dominos_set_" + (Scene.f_6 + 1)). Traced purely from the
+	// decompile in response to a user question ("is it possible to
+	// figure out which dominos_set_ the current table uses"), then
+	// live-confirmed via ProbeDominoSkin(): a real table read
+	// Scene.f_6=5 (implying "dominos_set_6"), exactly matching
+	// FindLoadedDominoSetDict()'s own independently-streamed answer --
+	// MATCH. This ALSO settles the omitted-argument ambiguity the
+	// derivation below raises: a live value of 5, not 0, proves the real
+	// per-location code IS reaching func_59 some way this static trace
+	// didn't find (the call site read as passing no explicit iParam5,
+	// which would make func_2(0)=0 the only possible static result) --
+	// Scene.f_6 is NOT hardcoded to always read 0 in practice.
+	//
+	// Derivation: func_267 (~line 12793, builds the literal
+	// `"dominos_set_" + (N+1)` string for case 1 of the shared card/
+	// domino-skin switch -- see BuildDominoTileTextureName()'s own
+	// header comment) is called as `func_267(uParam0, iParam3)` from
+	// func_128 (~line 7277), itself called from func_60 (~line 4828) as
+	// `func_128(&(uParam0->f_1), 1, false, iParam1)` -- i.e. func_60's
+	// OWN iParam1 IS this N. func_60 is called exactly once in the whole
+	// file (~line 3469): `func_60(&(uParam0->f_2334), uParam0->f_1330.f_6)`
+	// -- uParam0 there is func_22's own Table parameter (CONFIRMED to be
+	// the same Table this file's own kTableSlot resolves, per this
+	// file's header comment's func_22 citation), so `uParam0->f_1330.f_6`
+	// is `Scene.f_6` -- a bare scalar field, no bracket-indexing/header-
+	// word question the way every ARRAY field in this file has needed.
+	//
+	// Scene.f_6 is itself SET a few lines earlier in the SAME function
+	// (func_22, ~line 3468) via `func_59(&(uParam0->f_1330), ...)`, whose
+	// body (~line 4761) does `uParam0->f_6 = func_2(iParam5)` -- func_2
+	// (~line 3038) is a location-code lookup table (`38->0, 98->1, 5->2,
+	// 9->3, 69->5, default->0` -- notably no case ever produces 4) using
+	// the exact same magic location codes (5/9/38/69/71/98) as a
+	// SEPARATE nearby switch (~line 3406) that picks the table's own
+	// win-point-target, strongly suggesting `iParam5` is meant to be
+	// some per-camp/location identifier. HOWEVER: the ONE call site of
+	// func_59 found (~line 3468) does not pass an explicit `iParam5`
+	// argument at all -- omitted trailing arguments default to 0 in
+	// RAGE script's own calling convention, meaning `func_2(0)` (the
+	// default-case branch, itself 0) is ALL this specific code path can
+	// ever produce, statically. Either the real location code is wired
+	// in through a code path this trace hasn't found (this project's own
+	// CLAUDE.md already flags an untraced "func_330/func_331-style
+	// table/location-skin lookup" as exactly this kind of gap), or
+	// Scene.f_6 genuinely is always 0 for dominoes_sp and the per-
+	// location table only matters for some OTHER script/context that
+	// happens to share func_2. ProbeDominoSkin() exists specifically to
+	// settle this against a real table by comparing this field's value
+	// to FindLoadedDominoSetDict()'s own already-independently-working
+	// "ask what's actually streamed" answer.
+	constexpr std::uint32_t kSceneDominoSkinFieldOffset = 6;
 
 	namespace
 	{
@@ -1166,14 +1222,14 @@ namespace DominoCheat
 			std::int32_t resultPip;
 		};
 
-		std::vector<CandidateMove> LocalLegalMoves(rage::scrThread* thread, std::uint32_t mySeatU, const std::int32_t* ends, std::uint32_t endCount, std::int32_t myHandCount)
+		std::vector<CandidateMove> LocalLegalMovesFromHand(const DominoHandEval::Tile* hand, std::int32_t handCount, const std::int32_t* ends, std::uint32_t endCount)
 		{
 			std::vector<CandidateMove> moves;
 			std::uint32_t endsToTry = (endCount > 0) ? endCount : 7;
 
-			for (std::int32_t handIndex = 0; handIndex < myHandCount; handIndex++)
+			for (std::int32_t handIndex = 0; handIndex < handCount; handIndex++)
 			{
-				DominoHandEval::Tile tile = ReadHandTile(thread, mySeatU, static_cast<std::uint32_t>(handIndex));
+				const DominoHandEval::Tile& tile = hand[handIndex];
 				if (!tile.IsValid())
 					continue;
 
@@ -1190,6 +1246,37 @@ namespace DominoCheat
 			return moves;
 		}
 
+		// Cheap, comparable snapshot of "what real-world decision is this
+		// for" -- the freshness key AsyncMoveAdvisor<DecisionKey> uses to
+		// decide whether a published background result still answers the
+		// CURRENT decision, or is left over from an earlier hand/board
+		// state. Only compares up to handCount/endCount -- slots beyond
+		// those are always default-constructed (Tile{-1,-1}/0)
+		// identically every time they're built, so comparing them too
+		// would be redundant, not incorrect.
+		struct DecisionKey
+		{
+			std::int32_t seat = -1;
+			std::int32_t handCount = -1;
+			std::int32_t deckCursor = -1;
+			std::uint32_t endCount = 0;
+			std::array<std::int32_t, 7> ends{};
+			std::array<DominoHandEval::Tile, kMaxHandCapacity> hand{};
+
+			bool operator==(const DecisionKey& o) const
+			{
+				if (seat != o.seat || handCount != o.handCount || deckCursor != o.deckCursor || endCount != o.endCount)
+					return false;
+				for (std::uint32_t i = 0; i < endCount; i++)
+					if (ends[i] != o.ends[i])
+						return false;
+				for (std::int32_t i = 0; i < handCount; i++)
+					if (!(hand[i].low == o.hand[i].low && hand[i].high == o.hand[i].high))
+						return false;
+				return true;
+			}
+		};
+
 		// Depth-limited paranoid minimax (DominoSearch.h) over every
 		// seat's REAL hand -- see that header's own file comment for the
 		// full rationale. Only sound when nothing is hidden: all 4 seats
@@ -1202,18 +1289,47 @@ namespace DominoCheat
 		// model, see DominoSearch.h's own scope notes) or when
 		// endCount==0 (the opening move of a round, where "look ahead at
 		// the board" is moot -- nothing has constrained anything yet).
-		// NOT yet live-tested (2026-09-13) -- replaces a 1-ply heuristic
-		// that WAS live-tested and confirmed to recommend only legal
-		// moves while still losing more than expected, i.e. legal-but-
-		// shallow, not buggy.
+		// The fast-heuristic branch stays fully synchronous (unchanged in
+		// cost from before the minimax existed, never the source of the
+		// freeze below).
+		//
+		// ASYNC (2026-09-13, second live-freeze fix): DrawOverlay() calls
+		// this every single tick for the ENTIRE real-world decision
+		// window (however long the player just looks at the screen
+		// deciding, gated on turnSubState==4 -- see DrawOverlay()'s own
+		// comment), not once per turn. A first fix memoized the deep-
+		// search branch against the last hand/board it ran for, which
+		// stopped the repeat computation but still meant the very FIRST
+		// tick of every new decision ran the search synchronously,
+		// blocking that frame for however long the search took. This
+		// goes further per the user's own request: the deep-search
+		// branch now only ever reads live memory into a GameState
+		// snapshot (cheap, must stay on this thread) and hands it to
+		// AsyncMoveAdvisor's background worker (see that header's own
+		// file comment for why crossing that exact boundary is safe) --
+		// this function itself never blocks on the search at all
+		// anymore. The tradeoff: the very first tick (or two) of a new
+		// decision shows no recommendation yet, until the worker
+		// publishes a matching result -- an unnoticeable gap against a
+		// human decision (low milliseconds, bounded by
+		// DominoSearch::kDefaultNodeBudget), and deliberately never a
+		// stale one for a hand that's already moved on.
 		MoveRecommendation DetermineBestMove(rage::scrThread* thread, std::uint32_t mySeatU)
 		{
 			MoveRecommendation best;
 			std::int32_t mySeat = static_cast<std::int32_t>(mySeatU);
 
 			std::int32_t myHandCount = SeatLocal(thread, mySeatU).At(kSeatHandCountOffset).AsInt32();
-			if (myHandCount <= 0)
+			if (myHandCount < 0)
+				myHandCount = 0;
+			if (myHandCount > static_cast<std::int32_t>(kMaxHandCapacity))
+				myHandCount = static_cast<std::int32_t>(kMaxHandCapacity);
+			if (myHandCount == 0)
 				return best;
+
+			std::array<DominoHandEval::Tile, kMaxHandCapacity> myHand{};
+			for (std::int32_t i = 0; i < myHandCount; i++)
+				myHand[i] = ReadHandTile(thread, mySeatU, static_cast<std::uint32_t>(i));
 
 			std::array<std::int32_t, 7> ends{};
 			std::uint32_t endCount = DetermineOpenEnds(thread, mySeatU, ends.data(), static_cast<std::uint32_t>(ends.size()));
@@ -1223,7 +1339,7 @@ namespace DominoCheat
 
 			if (!allHandsKnown || endCount == 0)
 			{
-				std::vector<CandidateMove> moves = LocalLegalMoves(thread, mySeatU, ends.data(), endCount, myHandCount);
+				std::vector<CandidateMove> moves = LocalLegalMovesFromHand(myHand.data(), myHandCount, ends.data(), endCount);
 				if (moves.empty())
 					return best;
 
@@ -1266,8 +1382,44 @@ namespace DominoCheat
 				return best;
 			}
 
-			// Full-information path: build the pure-logic search state
-			// from live-read hands and hand off to DominoSearch.h.
+			// Full-information path: ASYNC from here down. Build the
+			// freshness key + pure-logic search state from live-read
+			// hands (reusing myHand[] for mySeat rather than re-reading
+			// it), then check whether the background worker has already
+			// published a result for this EXACT decision.
+			DecisionKey key;
+			key.seat = mySeat;
+			key.handCount = myHandCount;
+			key.deckCursor = deckCursor;
+			key.endCount = endCount;
+			key.ends = ends;
+			key.hand = myHand;
+
+			static AsyncMoveAdvisor<DecisionKey> g_advisor;
+			AsyncMoveAdvisor<DecisionKey>::Published published = g_advisor.GetLatest();
+			if (published.valid && published.key == key)
+			{
+				const DominoSearch::Recommendation& rec = published.rec;
+				if (rec.valid)
+				{
+					best.valid = true;
+					best.handIndex = static_cast<std::int32_t>(rec.handIndex);
+					best.tile = rec.tile;
+					best.endPip = rec.endPip;
+					best.resultPip = rec.resultPip;
+					best.isWinningMove = rec.isWinningMove;
+					// Recomputed for display only -- DrawMoveSafetyStatus()'s
+					// SAFE/RISKY/VERY RISKY qualifier is keyed on "opponent
+					// tiles that can answer the resulting end", a distinct,
+					// already-understood metric from the minimax score itself.
+					best.opponentRespondCount = rec.isWinningMove ? 0 : CountPipAcrossOpponents(thread, mySeat, rec.resultPip);
+				}
+				return best;
+			}
+
+			// No fresh answer yet for this exact decision -- submit it
+			// (non-blocking) and report nothing THIS tick rather than a
+			// stale recommendation for a hand that may no longer match.
 			DominoSearch::GameState state;
 			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
 			{
@@ -1277,46 +1429,37 @@ namespace DominoCheat
 					continue;
 
 				state.occupied[seat] = true;
-				std::int32_t handCount = seatLocal.At(kSeatHandCountOffset).AsInt32();
+				bool isMe = (static_cast<std::int32_t>(seat) == mySeat);
+				std::int32_t handCount = isMe ? myHandCount : seatLocal.At(kSeatHandCountOffset).AsInt32();
 				if (handCount < 0)
 					handCount = 0;
 				if (handCount > static_cast<std::int32_t>(kMaxHandCapacity))
 					handCount = static_cast<std::int32_t>(kMaxHandCapacity);
+				if (handCount > static_cast<std::int32_t>(DominoSearch::kMaxHandTiles))
+					handCount = static_cast<std::int32_t>(DominoSearch::kMaxHandTiles);
 
 				for (std::int32_t i = 0; i < handCount; i++)
 				{
-					DominoHandEval::Tile tile = ReadHandTile(thread, seat, static_cast<std::uint32_t>(i));
+					DominoHandEval::Tile tile = isMe ? myHand[i] : ReadHandTile(thread, seat, static_cast<std::uint32_t>(i));
 					if (tile.IsValid())
-						state.hands[seat].push_back(tile);
+						state.hands[seat][static_cast<std::size_t>(state.handCounts[seat]++)] = tile;
 				}
 			}
 			for (std::uint32_t ei = 0; ei < endCount; ei++)
-				state.ends.pips.push_back(ends[ei]);
+				state.ends.pips[static_cast<std::size_t>(state.ends.count++)] = ends[ei];
 			state.turnSeat = mySeat;
 
 			// 8 plies ~= two full round-robins in a 4-seat game --
 			// chosen as a starting budget balancing look-ahead depth
-			// against alpha-beta node count for typical mid-round hand
-			// sizes (3-7 legal-move branching); worth raising once
-			// endgame hands are small (fewer legal replies per ply makes
-			// deeper search cheap exactly when it matters most). NOT
-			// tuned against real frame-time yet.
+			// against node count for typical mid-round hand sizes (3-7
+			// legal-move branching); worth raising once endgame hands
+			// are small. Worst-case wall-clock (now on the background
+			// thread, never this one) is bounded by
+			// DominoSearch::kDefaultNodeBudget regardless of what
+			// depth/branching produce -- see that constant's own
+			// comment.
 			constexpr int kMaxSearchDepth = 8;
-			DominoSearch::Recommendation rec = DominoSearch::FindBestMove(state, mySeat, kMaxSearchDepth);
-			if (!rec.valid)
-				return best;
-
-			best.valid = true;
-			best.handIndex = static_cast<std::int32_t>(rec.handIndex);
-			best.tile = rec.tile;
-			best.endPip = rec.endPip;
-			best.resultPip = rec.resultPip;
-			best.isWinningMove = rec.isWinningMove;
-			// Recomputed for display only -- DrawMoveSafetyStatus()'s
-			// SAFE/RISKY/VERY RISKY qualifier is keyed on "opponent
-			// tiles that can answer the resulting end", a distinct,
-			// already-understood metric from the minimax score itself.
-			best.opponentRespondCount = rec.isWinningMove ? 0 : CountPipAcrossOpponents(thread, mySeat, rec.resultPip);
+			g_advisor.SubmitJob(key, state, mySeat, kMaxSearchDepth);
 			return best;
 		}
 
@@ -1493,6 +1636,10 @@ namespace DominoCheat
 		constexpr float kReleaseOpponentTileIconHeight = 0.045f;
 		constexpr float kReleaseBoneyardX = 0.02f;
 		constexpr float kReleaseBoneyardY = 0.30f;
+		constexpr float kReleaseBoneyardTileIconLabelOffsetX = 0.055f; // CONFIRMED LIVE 2026-09-13, see Config::Values::BoneyardTileIconLabelOffsetX's own comment
+		constexpr float kReleaseBoneyardTileIconSpacingX = 0.015f;
+		constexpr float kReleaseBoneyardTileIconWidth = 0.015f;
+		constexpr float kReleaseBoneyardTileIconHeight = 0.045f;
 #endif
 
 		// Real 2D tile icons -- one row per occupied OPPONENT seat (NEVER
@@ -1603,6 +1750,17 @@ namespace DominoCheat
 		// -- that list's rows now scatter to per-seat calibrated
 		// positions instead of a single top-to-bottom stack, so there's
 		// no longer a single "next free y" to continue from.
+		//
+		// Real 2D tile icons (2026-09-13, per user request) -- replaced
+		// the plain FormatTile() text list with the same real
+		// "dominos_set_N"/"DOMINO_<low>_<high>" sprites
+		// DrawOpponentHandStatus() already draws (see
+		// BuildDominoTileTextureName()/FindLoadedDominoSetDict()'s own
+		// header comments for the confirmation trail), same "draw
+		// nothing this tick if the dict isn't streamed yet, no text
+		// fallback" convention that function already established. Only
+		// the "(N):" count in the label stays as plain text -- the tiles
+		// themselves are icons now.
 		void DrawBoneyardStatus(rage::scrThread* thread)
 		{
 			std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
@@ -1610,21 +1768,45 @@ namespace DominoCheat
 			if (remaining <= 0 || remaining > static_cast<std::int32_t>(kTileSetSize))
 				return;
 
+			std::string dominoSetDict;
+			if (!FindLoadedDominoSetDict(dominoSetDict))
+			{
+				TEXTURE::REQUEST_STREAMED_TEXTURE_DICT(const_cast<char*>("dominos_set_1"), false);
+				return;
+			}
+
 			const Config::Values& cfg = Config::Get();
 #ifdef _DEBUG
 			float x = cfg.BoneyardX;
 			float y = cfg.BoneyardY;
+			float labelOffsetX = cfg.BoneyardTileIconLabelOffsetX;
+			float iconSpacingX = cfg.BoneyardTileIconSpacingX;
+			float iconWidth = cfg.BoneyardTileIconWidth;
+			float iconHeight = cfg.BoneyardTileIconHeight;
 #else
 			float x = kReleaseBoneyardX;
 			float y = kReleaseBoneyardY;
+			float labelOffsetX = kReleaseBoneyardTileIconLabelOffsetX;
+			float iconSpacingX = kReleaseBoneyardTileIconSpacingX;
+			float iconWidth = kReleaseBoneyardTileIconWidth;
+			float iconHeight = kReleaseBoneyardTileIconHeight;
 #endif
 
-			std::ostringstream line;
-			line << Localization::BoneyardWord() << " (" << remaining << "): ";
-			for (std::int32_t i = deckCursor; i < static_cast<std::int32_t>(kTileSetSize); i++)
-				line << FormatTile(ReadBoneyardTile(thread, i)) << " ";
+			std::ostringstream label;
+			label << Localization::BoneyardWord() << " (" << remaining << "):";
+			DrawBgText(label.str(), x, y, 20, 200, 220, 255);
 
-			DrawBgText(line.str(), x, y, 20, 200, 220, 255);
+			float iconX = x + labelOffsetX;
+			for (std::int32_t i = deckCursor; i < static_cast<std::int32_t>(kTileSetSize); i++)
+			{
+				DominoHandEval::Tile tile = ReadBoneyardTile(thread, i);
+				if (!tile.IsValid())
+					continue;
+
+				std::string textureName = BuildDominoTileTextureName(tile);
+				GRAPHICS::DRAW_SPRITE(const_cast<char*>(dominoSetDict.c_str()), const_cast<char*>(textureName.c_str()), iconX, y, iconWidth, iconHeight, 0.0f, 255, 255, 255, 255, 0);
+				iconX += iconSpacingX;
+			}
 		}
 
 #ifndef _DEBUG
@@ -2154,6 +2336,45 @@ namespace DominoCheat
 
 			Log::Write("DominoCheat::ProbeTilePropOwnership: propSlot={} owner={} value={} tile={} handle={}{} {}",
 				propSlot, owner, value, tileStr, handle, isMine ? "  <-- mine" : "", coordStr);
+		}
+	}
+
+	// Diagnostic: reads Scene.f_6 (kSceneDominoSkinFieldOffset -- see its
+	// own header comment for the full func_267/func_60/func_59/func_2
+	// derivation trail) and logs it next to whatever
+	// FindLoadedDominoSetDict() independently finds already streamed for
+	// THIS same real table. CONFIRMED LIVE (2026-09-13): a real table
+	// read Scene.f_6=5 vs FindLoadedDominoSetDict()="dominos_set_6" --
+	// MATCH, and see kSceneDominoSkinFieldOffset's own comment for why a
+	// nonzero live value also resolves this field's earlier omitted-
+	// argument ambiguity. Wired to the F12 menu's "Probe Domino Skin"
+	// item.
+	void ProbeDominoSkin()
+	{
+		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
+		if (!thread)
+		{
+			Log::Write("DominoCheat::ProbeDominoSkin: dominoes_sp not running");
+			return;
+		}
+
+		std::int32_t sceneSkinField = SceneLocal(thread).At(kSceneDominoSkinFieldOffset).AsInt32();
+
+		std::string streamedDict;
+		bool foundStreamed = FindLoadedDominoSetDict(streamedDict);
+		std::string streamedStr = foundStreamed ? streamedDict : std::string("(none streamed yet)");
+
+		if (sceneSkinField >= 0 && sceneSkinField < kDominoSetProbeHi)
+		{
+			std::string impliedDict = "dominos_set_" + std::to_string(sceneSkinField + 1);
+			bool match = foundStreamed && impliedDict == streamedDict;
+			Log::Write("DominoCheat::ProbeDominoSkin: Scene.f_6={} (implies {}) vs FindLoadedDominoSetDict()={} -- {}",
+				sceneSkinField, impliedDict, streamedStr, match ? "MATCH" : "MISMATCH");
+		}
+		else
+		{
+			Log::Write("DominoCheat::ProbeDominoSkin: Scene.f_6={} (outside the 0-{} range dominos_set_N covers -- offset is likely wrong, or this isn't really the skin field) vs FindLoadedDominoSetDict()={}",
+				sceneSkinField, kDominoSetProbeHi - 1, streamedStr);
 		}
 	}
 

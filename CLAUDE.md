@@ -18,8 +18,18 @@ a standalone articulated readout, and added full 13-language
 localization -- also NOT yet live-tested. A user report the same evening
 found the blocking/win advisor's recommendations were legal but still
 lost more than expected -- Session 9 below replaced its 1-ply heuristic
-with a depth-limited minimax over the fully-known hands; NOT yet
-live-tested.**
+with a depth-limited minimax over the fully-known hands. That FIRST
+version froze the game outright the same day (per-tick recomputation +
+no cost bound, see Session 9's own addendum) -- fixed in two escalating
+passes, first a synchronous memoization cache + a hard node budget +
+fixed-capacity arrays, then (per user request for a more robust fix) a
+full move to a background worker thread (`AsyncMoveAdvisor.h`) so
+`DetermineBestMove()` never blocks the game thread on the search at
+all. NOT yet live-tested. Two more same-evening changes ARE live-tested
+and confirmed (Session 10 below): the boneyard row now draws real tile
+icons instead of text, and a new `ProbeDominoSkin()` diagnostic
+confirmed `Scene.f_6` really is the table's `dominos_set_N` skin
+index.**
 `src/DominoCheat.cpp`'s file header comment documents every struct
 offset this mod reads, each with its own confidence rating. Sessions so
 far:
@@ -209,6 +219,93 @@ far:
    unit tests pass; the search itself is NOT yet live-tested against a
    real table, and its default 8-ply search depth is a starting guess,
    not tuned against real frame-time.
+   **Live bug, same day: running "Probe Best Move" froze the game.**
+   Root cause was two-fold, both now fixed: (1) `DrawOverlay()` calls
+   `DetermineBestMove()` every single TICK for the entire real-world
+   decision window (however long the player looks at the screen, gated
+   on `turnSubState==4`), not once per turn -- so the very first
+   version was rebuilding a fresh depth-8 search 30-60 times a second,
+   which alone is enough to grind the game to a halt; a plain 1-ply
+   heuristic had been cheap enough that nobody had ever noticed this
+   per-tick recomputation was happening at all. Fixed by memoizing
+   `DetermineBestMove()` against the last hand/open-ends/boneyard state
+   it computed for (a function-local `static` cache) -- the search now
+   only actually runs once per real decision. (2) `DominoSearch.h` had
+   no hard bound on total search cost -- `std::vector` everywhere meant
+   every node heap-allocated (a `GameState` copy of 4 vectors plus a
+   fresh move-list vector, per node), and depth 8 had no cap on
+   branching, so a branchy board had no worst-case guarantee at all.
+   Rewrote the whole header around fixed-capacity arrays (zero heap
+   allocation anywhere in the search loop) and added a hard
+   `nodeBudget` (default 100k node visits, `kDefaultNodeBudget`) that
+   `Search()` decrements globally across the whole call and short-
+   circuits on exhaustion -- bounds worst-case wall-clock regardless of
+   how bad branching gets, independent of the memoization fix. Existing
+   unit tests needed only mechanical updates (fixed-array state
+   construction instead of `std::vector`); all still pass. Builds clean
+   (Debug + Release), redeployed -- **still NOT live-tested against a
+   real table** (the freeze WAS the live test; this is the fix, not yet
+   itself confirmed not to freeze).
+   **Same day, user request for a more robust fix than tuning the
+   bound**: moved the deep search off the game thread entirely onto a
+   dedicated background worker, `src/AsyncMoveAdvisor.h` (new, generic,
+   templated on a caller-supplied `Key` type). The natural thread
+   boundary is exactly the one `DominoSearch.h` already had by design --
+   `GameState` has zero game-memory dependency, so it's exactly as safe
+   to hand to another thread as any other plain value; only the LIVE
+   READ into that snapshot has to stay on the game thread (no documented
+   locking exists for touching `scrThread`/script-local memory from a
+   second thread while the game keeps ticking). `DetermineBestMove()`'s
+   deep-search branch now: builds a `DecisionKey` (a cheap, comparable
+   snapshot of "what real-world decision is this for" -- seat, hand,
+   open ends, deck cursor) and the `GameState` snapshot as before, checks
+   `AsyncMoveAdvisor::GetLatest()` (non-blocking) for a published result
+   whose key matches, and either returns it immediately or calls
+   `SubmitJob()` (also non-blocking) and reports no recommendation for
+   THIS tick -- deliberately never a stale one for a hand that's already
+   moved on. `DetermineBestMove()` itself now never blocks on the search
+   at all; the worker typically publishes within a few milliseconds
+   (bounded by `DominoSearch::kDefaultNodeBudget` regardless of board
+   complexity), an unnoticeable gap against a human decision. Superseded
+   the previous synchronous memoization cache entirely (the async
+   advisor's own published-result cache does the same job). Added a
+   concurrency sanity test (`TestAsyncAdvisorPublishesMatchingResult`,
+   using a real background thread and a 2-second poll timeout) since the
+   real in-game plumbing can't be exercised from the test project --
+   confirms the worker actually runs, publishes under its own mutex
+   correctly, and agrees with what `FindBestMove()` gives synchronously
+   for the identical input. Builds clean (Debug + Release), all tests
+   pass, redeployed. **Still NOT live-tested against a real table** --
+   this is the third iteration of the same fix in one day and deserves a
+   real live check before being trusted.
+10. Same evening, two more small user-requested changes, both CONFIRMED
+    LIVE (2026-09-13): (a) `DrawBoneyardStatus()` was rewritten to draw
+    the same real 2D `"dominos_set_N"`/`"DOMINO_<low>_<high>"` tile-face
+    icons `DrawOpponentHandStatus()` already draws, replacing its old
+    plain `FormatTile()` text list -- new `Config` fields
+    `BoneyardTileIconLabelOffsetX/SpacingX/Width/Height`, seeded from
+    `OpponentTileIcon*`'s own confirmed values as a starting point.
+    `LabelOffsetX` needed its own retune (0.035 sat the icon strip too
+    close to the "Boneyard (N):" label; 0.055 clears it), user-tuned
+    live via Reload Config and now the default; `SpacingX/Width/Height`
+    reused the opponent row's values as-is, unretuned but visually fine
+    against the same sprite asset. (b) A user question -- "is it
+    possible to figure out which dominos_set_ the current table uses"
+    -- led to tracing `Scene.f_6` (`kSceneDominoSkinFieldOffset`,
+    `DominoCheat.cpp`) via `func_267`/`func_60`/`func_59`/`func_2`, plus
+    a new `ProbeDominoSkin()` F12 diagnostic built specifically to
+    settle a static-trace ambiguity the derivation couldn't resolve on
+    its own: the one real call site of `func_59` appears to omit its
+    trailing `iParam5` argument, which (if RAGE script's own default-
+    to-0 convention applies) would make `Scene.f_6` always read 0
+    regardless of the real table. Live result: `Scene.f_6=5` against a
+    real `"dominos_set_6"` table, matching `FindLoadedDominoSetDict()`'s
+    own independently-streamed answer exactly -- MATCH, both confirming
+    `Scene.f_6` really is the skin index AND disproving the "always 0"
+    theory (the real per-location wiring reaches this field some way
+    the static trace didn't find). `kSceneDominoSkinFieldOffset` and
+    `ProbeDominoSkin()`'s own header comments in `DominoCheat.cpp`/`.h`
+    are both updated to CONFIRMED LIVE.
 
 Read `DominoCheat.cpp`'s header comment before touching any offset -- it
 lays out the full derivation/citation trail (exact line numbers in the
@@ -319,6 +416,17 @@ Exits 0 and prints `ALL PASS` if every case passes; nonzero with a
   when nothing is hidden) and explicit scope limits (board modeled as a
   SET of open pip values, not exact end-count/topology; boneyard draws
   not modeled at all).
+- `src/AsyncMoveAdvisor.h` -- generic background-worker wrapper around
+  `DominoSearch::FindBestMove()`, added same day as `DominoSearch.h`
+  once the synchronous version froze the game live. Templated on a
+  caller-supplied `Key` type (DominoCheat.cpp's own `DecisionKey`) so
+  this file stays agnostic of DominoCheat.cpp's live-memory-reading
+  specifics. `DetermineBestMove()` is the only caller; see its own
+  comment for exactly where the thread boundary sits and why it's safe.
+  Has its own concurrency sanity test in
+  `tests/DominoHandEvalTests.cpp` (a real background thread, polled with
+  a timeout) since the real in-game call pattern can't be exercised
+  outside the game.
 - `src/ScriptLocal.h` -- a small chainable script-local field/array
   accessor, ported from HorseMenu's own `game/rdr/ScriptLocal.hpp`/
   `ScriptGlobal.hpp` (`..\HorseMenu\src\game\rdr\`) at the user's own

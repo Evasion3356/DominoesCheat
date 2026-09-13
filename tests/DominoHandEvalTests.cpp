@@ -16,8 +16,13 @@
 
 #include "../src/DominoHandEval.h"
 #include "../src/DominoSearch.h"
+#include "../src/AsyncMoveAdvisor.h"
 
+#include <chrono>
+#include <cstddef>
 #include <cstdio>
+#include <new>
+#include <thread>
 #include <vector>
 
 namespace
@@ -135,14 +140,17 @@ namespace
 	using DominoSearch::GameState;
 	using DominoSearch::FindBestMove;
 
-	GameState TwoSeatState(std::vector<Tile> myHand, std::vector<Tile> oppHand, std::vector<std::int32_t> openEnds)
+	GameState TwoSeatState(const std::vector<Tile>& myHand, const std::vector<Tile>& oppHand, const std::vector<std::int32_t>& openEnds)
 	{
 		GameState state;
 		state.occupied[0] = true;
 		state.occupied[1] = true;
-		state.hands[0] = std::move(myHand);
-		state.hands[1] = std::move(oppHand);
-		state.ends.pips = std::move(openEnds);
+		for (const Tile& t : myHand)
+			state.hands[0][static_cast<std::size_t>(state.handCounts[0]++)] = t;
+		for (const Tile& t : oppHand)
+			state.hands[1][static_cast<std::size_t>(state.handCounts[1]++)] = t;
+		for (std::int32_t pip : openEnds)
+			state.ends.pips[static_cast<std::size_t>(state.ends.count++)] = pip;
 		state.turnSeat = 0;
 		return state;
 	}
@@ -187,6 +195,141 @@ namespace
 		bool pickedA = (rec.tile.low == 0 && rec.tile.high == 5) || (rec.tile.low == 5 && rec.tile.high == 0);
 		Check(pickedA, "FindBestMove avoids the move that hands the opponent an outright win", "picked [5|6] (feeds the opponent's [6|6] double, an immediate opponent win) instead of [0|5]");
 	}
+
+	// AsyncMoveAdvisor.h sanity check -- added alongside DetermineBestMove()'s
+	// threading rewrite (2026-09-13, second live-freeze fix) since the
+	// real in-game plumbing can't be exercised here. Submits a job with
+	// an obvious answer (a single winning tile) to a real background
+	// worker thread and polls GetLatest() (exactly as DetermineBestMove()
+	// does) until a matching result shows up, verifying the worker
+	// actually runs, publishes under its own mutex correctly, and
+	// produces the same answer FindBestMove() gives synchronously for
+	// the identical input.
+	void TestAsyncAdvisorPublishesMatchingResult()
+	{
+		GameState state = TwoSeatState({ Tile{5,5} }, { Tile{0,1}, Tile{2,3} }, { 5 });
+
+		AsyncMoveAdvisor<int> advisor;
+		advisor.SubmitJob(1, state, 0, 4);
+
+		AsyncMoveAdvisor<int>::Published published;
+		auto start = std::chrono::steady_clock::now();
+		while (std::chrono::steady_clock::now() - start < std::chrono::seconds(2))
+		{
+			published = advisor.GetLatest();
+			if (published.valid && published.key == 1)
+				break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+
+		Check(published.valid && published.key == 1, "AsyncMoveAdvisor publishes a result for a submitted job", "timed out waiting 2s for the background worker to publish");
+		Check(published.rec.valid && published.rec.isWinningMove, "AsyncMoveAdvisor's published result matches the synchronous answer", "expected the single legal tile to be reported as a winning move, same as FindBestMove() gives directly");
+	}
+
+	// Waits (with a generous timeout, since this is real OS thread
+	// scheduling) for AsyncMoveAdvisorDetail::g_liveWorkerCount to reach
+	// a target value. Returns false on timeout.
+	bool WaitForLiveWorkerCount(int target, std::chrono::milliseconds timeout)
+	{
+		auto start = std::chrono::steady_clock::now();
+		while (std::chrono::steady_clock::now() - start < timeout)
+		{
+			if (AsyncMoveAdvisorDetail::g_liveWorkerCount.load() == target)
+				return true;
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		return AsyncMoveAdvisorDetail::g_liveWorkerCount.load() == target;
+	}
+
+	// Covers the destructor's NORMAL path (AsyncMoveAdvisorDetail::
+	// g_processDetaching == false, the state for any ordinary instance --
+	// this is the same path a plain local AsyncMoveAdvisor takes, exactly
+	// like the one right above), added the same day as the join()/detach()
+	// split itself (2026-09-13, review response to the earlier
+	// unconditional-join() version's DllMain deadlock risk). Forces a job
+	// to still be running (via Testing_SetArtificialJobDelay()) at the
+	// exact moment the destructor fires, then confirms two things a
+	// silent regression back to unconditional detach() would break:
+	// (1) the destructor actually BLOCKS until that in-flight job (and
+	// the worker thread itself) finishes -- proven by elapsed wall time,
+	// not just "didn't crash" -- and (2) the worker has FULLY exited
+	// (g_liveWorkerCount back to 0) by the time the destructor returns,
+	// which join()'s happens-before guarantee makes deterministic, not a
+	// race.
+	void TestAsyncAdvisorJoinsSynchronouslyOnNormalTeardown()
+	{
+		AsyncMoveAdvisorDetail::g_processDetaching.store(false);
+
+		constexpr auto kJobDelay = std::chrono::milliseconds(150);
+		constexpr auto kHeadStart = std::chrono::milliseconds(30); // time given to the worker, before beforeDestroy, to pick up the job and start sleeping
+		std::chrono::steady_clock::time_point beforeDestroy;
+		{
+			AsyncMoveAdvisor<int> advisor;
+			Check(WaitForLiveWorkerCount(1, std::chrono::seconds(2)), "TestAsyncAdvisorJoinsSynchronouslyOnNormalTeardown: worker starts", "g_liveWorkerCount never reached 1");
+
+			advisor.Testing_SetArtificialJobDelay(kJobDelay);
+			GameState state = TwoSeatState({ Tile{5,5} }, { Tile{0,1}, Tile{2,3} }, { 5 });
+			advisor.SubmitJob(1, state, 0, 1);
+			// Give the worker time to pick the job up and enter the
+			// artificial delay before we destroy `advisor` below.
+			std::this_thread::sleep_for(kHeadStart);
+
+			beforeDestroy = std::chrono::steady_clock::now();
+			// ~AsyncMoveAdvisor() runs at the closing brace below.
+		}
+		auto elapsed = std::chrono::steady_clock::now() - beforeDestroy;
+
+		// By beforeDestroy, roughly kHeadStart of the artificial delay has
+		// already elapsed, so the destructor should block for roughly
+		// (kJobDelay - kHeadStart) more -- generous slack below that for
+		// real OS scheduling jitter, since this only needs to distinguish
+		// "blocked for a real chunk of the remaining delay" from "returned
+		// near-instantly" (what an unconditional detach() would do).
+		Check(elapsed >= kJobDelay - kHeadStart - std::chrono::milliseconds(50), "normal teardown's destructor blocks until the in-flight job finishes", "expected the destructor to take roughly the remaining artificial job delay (join, not detach)");
+		Check(AsyncMoveAdvisorDetail::g_liveWorkerCount.load() == 0, "normal teardown's destructor guarantees the worker has fully exited before returning", "join()'s happens-before should make this deterministic, not a race");
+	}
+
+	// Covers the destructor's PROCESS-DETACHING path
+	// (AsyncMoveAdvisorDetail::g_processDetaching == true, set for real by
+	// main.cpp's DllMain at the top of DLL_PROCESS_DETACH) -- the whole
+	// reason that branch exists is to NOT block DllMain while a job is
+	// still running. Deliberately does NOT destroy a normal, stack- or
+	// heap-owned instance for this: doing so would exercise the exact
+	// use-after-free this file's own header comment warns about (the
+	// destructor returns via detach() before the worker has necessarily
+	// stopped touching this object's members, and unlike the real
+	// production caller -- a function-local static whose storage is never
+	// reused before the whole process dies -- this TEST PROCESS keeps
+	// running afterward and could reuse that memory for something else).
+	// Instead, the object is placement-new'd into function-local static
+	// storage and never deallocated (only ever destructed) -- mirroring
+	// the real justification exactly: the bytes remain valid for the rest
+	// of the process's life either way, so the still-running worker
+	// touching them after the destructor returns is safe here too, not
+	// just assumed safe.
+	void TestAsyncAdvisorDetachesWithoutBlockingWhenProcessDetaching()
+	{
+		using Advisor = AsyncMoveAdvisor<int>;
+		static alignas(Advisor) std::byte storage[sizeof(Advisor)];
+		Advisor* advisor = new (&storage) Advisor();
+
+		Check(WaitForLiveWorkerCount(1, std::chrono::seconds(2)), "TestAsyncAdvisorDetachesWithoutBlockingWhenProcessDetaching: worker starts", "g_liveWorkerCount never reached 1");
+
+		constexpr auto kJobDelay = std::chrono::milliseconds(300);
+		advisor->Testing_SetArtificialJobDelay(kJobDelay);
+		GameState state = TwoSeatState({ Tile{5,5} }, { Tile{0,1}, Tile{2,3} }, { 5 });
+		advisor->SubmitJob(1, state, 0, 1);
+		std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+		AsyncMoveAdvisorDetail::g_processDetaching.store(true);
+		auto start = std::chrono::steady_clock::now();
+		advisor->~Advisor();
+		auto elapsed = std::chrono::steady_clock::now() - start;
+		AsyncMoveAdvisorDetail::g_processDetaching.store(false);
+
+		Check(elapsed < std::chrono::milliseconds(100), "process-detaching teardown's destructor does not block on an in-flight job", "expected detach() to return almost immediately despite a ~300ms job still running -- a regression back to join() here is exactly the DllMain deadlock risk this path exists to avoid");
+		Check(WaitForLiveWorkerCount(0, std::chrono::seconds(2)), "the detached worker still exits cleanly on its own afterward", "expected g_liveWorkerCount back to 0 within 2s even though the destructor didn't wait for it");
+	}
 }
 
 int main()
@@ -199,6 +342,9 @@ int main()
 	TestSearchNoLegalMoveIsInvalid();
 	TestSearchImmediateWinPreferredOverAnythingElse();
 	TestSearchLooksPastImmediateReply();
+	TestAsyncAdvisorPublishesMatchingResult();
+	TestAsyncAdvisorJoinsSynchronouslyOnNormalTeardown();
+	TestAsyncAdvisorDetachesWithoutBlockingWhenProcessDetaching();
 
 	if (g_failures == 0)
 	{
