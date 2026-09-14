@@ -27,6 +27,20 @@ namespace DominoCheat
 	// running; no-ops otherwise.
 	void OnTick();
 
+	// Signals the background move-advisor worker (see AsyncMoveAdvisor.h)
+	// to stop as early as possible during shutdown. Called from
+	// main.cpp's DllMain at the very top of DLL_PROCESS_DETACH -- BEFORE
+	// scriptUnregister() and the CRT's later static-destruction pass that
+	// runs AsyncMoveAdvisor's own destructor -- so the worker gets that
+	// entire extra window to actually finish, on top of the destructor's
+	// own bounded wait, rather than only learning shutdown is happening
+	// once the destructor itself fires. Safe to call even if the advisor
+	// was never constructed (no-ops) or is called again later from the
+	// destructor path (idempotent). This is what keeps a slow in-flight
+	// search from still being alive when the module unmaps, which is
+	// what was leaving the .asi file locked on disk after eject.
+	void PrepareForShutdown();
+
 #ifdef _DEBUG
 	// Everything below is wired to the F12 test menu only (see
 	// script.cpp's BuildMenu(), Debug-only) -- dev-tuning/reversing tools

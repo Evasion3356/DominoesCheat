@@ -18,6 +18,7 @@
 #include "keyboard.h"
 #include "Config.h"
 #include "GamePointers.h"
+#include "DominoCheat.h"
 
 BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 {
@@ -42,6 +43,15 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 		// automatic static-destruction pass that runs after this
 		// function returns.
 		AsyncMoveAdvisorDetail::g_processDetaching.store(true);
+		// Signal the advisor's worker to stop NOW, not only once its
+		// destructor fires from the CRT's later static-destruction pass
+		// (that happens after this whole function returns) -- gives the
+		// worker the entire rest of this handler (scriptUnregister()
+		// included) as extra time to actually exit before the
+		// destructor's own bounded wait begins. See DominoCheat.h's
+		// PrepareForShutdown() comment for why this matters for the
+		// .asi-locked-on-eject failure mode.
+		DominoCheat::PrepareForShutdown();
 		scriptUnregister(hInstance);
 #ifdef _DEBUG
 		keyboardHandlerUnregister(OnKeyboardMessage);

@@ -1373,6 +1373,21 @@ namespace DominoCheat
 			if (g_moveAdvisor)
 				g_moveAdvisor->Cancel();
 		}
+	}
+
+	// See this function's own declaration comment (DominoCheat.h) for why
+	// main.cpp's DllMain calls this at the very top of DLL_PROCESS_DETACH,
+	// before scriptUnregister() -- g_moveAdvisor is only ever non-null
+	// once MoveAdvisor() has run at least once (i.e. a decision was
+	// evaluated this session), so this safely no-ops otherwise.
+	void PrepareForShutdown()
+	{
+		if (g_moveAdvisor)
+			g_moveAdvisor->RequestStop();
+	}
+
+	namespace
+	{
 
 		// Full-information search (DominoSearch.h) over every seat's REAL
 		// hand, the boneyard's known draw order, and the table's scores --

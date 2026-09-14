@@ -49,42 +49,41 @@
 	instance does (typically a function-local static in DetermineBestMove(),
 	so effectively the whole game session) -- see the destructor for
 	shutdown. The destructor always signals shutdown (sets
-	m_shuttingDown, wakes the condition variable) but only JOINS
-	conditionally: an earlier version of this file joined unconditionally
-	and reasoned that was safe because this worker never touches the
-	loader (no LoadLibrary, no calling into a DLL mid-unload) -- but that
-	reasoning missed a sharper problem. A function-local static's
-	destructor runs as part of a statically-linked-CRT DLL's teardown
-	from DllMain(DLL_PROCESS_DETACH), which Windows always calls under
-	the process's loader lock, and a THREAD'S OWN EXIT triggers
-	DLL_THREAD_DETACH notifications to every other loaded module -- which
-	itself needs that same loader lock, regardless of what code the
-	exiting thread ran. So joining here can deadlock against our own
-	DllMain even though this worker's actual workload (FindBestMove()
-	over a self-contained GameState) never goes near the loader -- the
-	thread's mere act of exiting still does. Matches Microsoft's own
-	DllMain guidance: never wait on a thread handle from DllMain or
-	anything torn down as part of it.
+	m_shuttingDown, wakes the condition variable) but only waits
+	UNBOUNDED conditionally: an earlier version of this file waited
+	unbounded unconditionally and reasoned that was safe because this
+	worker never touches the loader (no LoadLibrary, no calling into a
+	DLL mid-unload) -- but that reasoning missed a sharper problem. A
+	function-local static's destructor runs as part of a
+	statically-linked-CRT DLL's teardown from DllMain(DLL_PROCESS_DETACH),
+	which Windows always calls under the process's loader lock, and a
+	THREAD'S OWN EXIT triggers DLL_THREAD_DETACH notifications to every
+	other loaded module -- which itself needs that same loader lock,
+	regardless of what code the exiting thread ran. So waiting unbounded
+	here can deadlock against our own DllMain even though this worker's
+	actual workload (FindBestMove() over a self-contained GameState)
+	never goes near the loader -- the thread's mere act of exiting still
+	does. Matches Microsoft's own DllMain guidance: never wait on a
+	thread handle from DllMain or anything torn down as part of it.
 
-	The fix is NOT to always detach() instead -- detach() has its own
-	sharp edge, and it's not just theoretical: this DLL is loaded under
-	ScriptHookRDR2, and its ".dev" hot-reload mode does a REAL
-	FreeLibrary()+LoadLibrary() cycle on this exact module while the game
-	process keeps running (confirmed 2026-09-13, the same day this file
-	was written) -- unlike real process exit, where detach()'s "storage
-	is never reused" reasoning is sound because the whole address space
-	is about to disappear together, a hot-reload genuinely unmaps this
-	module while the process lives on. If the worker is still executing
-	code from that mapping (or still touching m_jobMutex/m_jobCv/
-	m_shuttingDown, members of THIS object) when that happens, that's a
-	real crash risk, not a harmless no-op -- and separately, ANY
-	shorter-than-process-lifetime instance (e.g.
+	The fix is NOT to just abandon the handle without waiting at all --
+	that has its own sharp edge, and it's not just theoretical: this DLL
+	is loaded under ScriptHookRDR2, and its ".dev" hot-reload mode does a
+	REAL FreeLibrary()+LoadLibrary() cycle on this exact module while the
+	game process keeps running (confirmed 2026-09-13, the same day this
+	file was written) -- unlike real process exit, where "the whole
+	address space is about to disappear together" reasoning is sound, a
+	hot-reload genuinely unmaps this module while the process lives on.
+	If the worker is still executing code from that mapping (or still
+	touching m_jobMutex/m_jobCv/m_shuttingDown, members of THIS object)
+	when that happens, that's a real crash risk, not a harmless no-op --
+	and separately, ANY shorter-than-process-lifetime instance (e.g.
 	tests/DominoHandEvalTests.cpp's own
 	TestAsyncAdvisorPublishesMatchingResult(), a short-lived local
 	AsyncMoveAdvisor<int>) needs the worker actually stopped, not just
 	signaled, before its storage goes away regardless of DllMain at all.
 
-	So the destructor picks one of three behaviors via
+	So the destructor picks one of two behaviors via
 	AsyncMoveAdvisorDetail::g_processDetaching, a flag main.cpp's DllMain
 	sets at the top of its DLL_PROCESS_DETACH case -- which runs BEFORE
 	the CRT's automatic static-destruction pass that tears down function-
@@ -93,28 +92,18 @@
 	main.cpp does not currently distinguish the two, see its own
 	DLL_PROCESS_DETACH case comment):
 	  - g_processDetaching == false (any normal-lifetime instance,
-	    including the test's): plain join(). Safe -- nothing here is
-	    running under the loader lock -- and necessary, since the worker
-	    must be fully stopped before this object's members are destroyed.
-	  - g_processDetaching == true: NEVER join() (the deadlock risk above
-	    applies unconditionally here, real exit or hot-reload alike) --
-	    but also never a bare, immediate detach(). Instead, poll
-	    m_workerExited (a plain atomic WorkerLoop sets immediately before
-	    it returns, BEFORE any of the CRT's own loader-lock-needing
-	    thread-exit machinery even begins) for up to
-	    kProcessDetachWaitTimeout. This is NOT the same hazard as
-	    join(): join() blocks on the OS thread HANDLE, which only
-	    signals once that loader-lock-guarded machinery has fully run;
-	    polling our own atomic instead only waits for WorkerLoop's body
-	    to finish, a point strictly BEFORE the worker could ever need the
-	    lock we're already holding, so it can't deadlock against us no
-	    matter how long it takes. Gives the worker a real chance to
-	    actually finish for the hot-reload case (where it matters) while
-	    remaining bounded either way; detach() (never blocks, so safe
-	    unconditionally) is called afterward regardless of whether the
-	    wait succeeded or timed out, since the std::thread object itself
-	    still needs joining or detaching or its own destructor will
-	    std::terminate.
+		including the test's): WaitForSingleObject(m_worker, INFINITE).
+		Safe -- nothing here is running under the loader lock -- and
+		necessary, since the worker must be fully stopped before this
+		object's members are destroyed.
+	  - g_processDetaching == true: a BOUNDED WaitForSingleObject
+		(kProcessDetachWaitTimeout, never INFINITE) instead -- waiting
+		unbounded here can deadlock against our own DllMain (see above).
+		This still gives the worker a real chance to actually finish for
+		the hot-reload case (where it matters) while remaining bounded
+		either way; CloseHandle() (never blocks, so safe unconditionally)
+		is called afterward regardless of whether the wait succeeded or
+		timed out.
 
 	NOT yet live-tested (2026-09-13) -- written immediately after the
 	synchronous version's own live freeze, as the more robust follow-up
@@ -138,7 +127,18 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
-#include <thread>
+
+// NOMINMAX guards this include specifically so this header can safely
+// pull in <windows.h> for WaitForSingleObject() regardless of what order
+// callers include it in relative to their own <windows.h> -- without it,
+// windows.h's raw min/max macros would clobber DominoSearch.h's own
+// std::min/std::max calls above if this header ever ended up included
+// after them without NOMINMAX already defined (see main.cpp's own header
+// comment for the same hazard from the other direction).
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 namespace AsyncMoveAdvisorDetail
 {
@@ -158,16 +158,16 @@ namespace AsyncMoveAdvisorDetail
 	// in-game plumbing to watch.
 	inline std::atomic<int> g_liveWorkerCount{ 0 };
 
-	// How long the destructor will wait (polling m_workerExited, never
-	// blocking on the thread handle -- see this file's own header
-	// comment) for the worker to finish on its own before giving up and
-	// detach()ing anyway, when torn down via DllMain(DLL_PROCESS_DETACH).
-	// Generous relative to DominoSearch::kDefaultNodeBudget's own "a
-	// handful of milliseconds" typical case, so a hot-reload (the
-	// scenario this exists for) almost always sees the worker actually
-	// gone rather than merely detached.
+	// How long the destructor will block on WaitForSingleObject(m_worker,
+	// ...) for the worker to finish on its own before giving up and
+	// closing the handle anyway, when torn down via
+	// DllMain(DLL_PROCESS_DETACH). Generous relative to
+	// DominoSearch::kDefaultNodeBudget's own "a handful of milliseconds"
+	// typical case, so a hot-reload (the scenario this exists for) almost
+	// always sees the worker actually finish within the bound.
 	inline constexpr std::chrono::milliseconds kProcessDetachWaitTimeout{ 500 };
-}
+
+	}
 
 template <typename Key>
 class AsyncMoveAdvisor
@@ -181,47 +181,69 @@ public:
 		DominoSearch::Recommendation rec;
 	};
 
-	AsyncMoveAdvisor() : m_worker(&AsyncMoveAdvisor::WorkerLoop, this) {}
+	// CreateThread (rather than std::thread) so this class owns a raw
+	// Windows HANDLE directly -- m_worker is that HANDLE, closed exactly
+	// once in the destructor. ThreadEntry is a static trampoline (a
+	// non-static member function can't match LPTHREAD_START_ROUTINE's
+	// plain DWORD WINAPI(LPVOID) signature) that casts lpParam back to
+	// this instance and calls the real WorkerLoop().
+	AsyncMoveAdvisor() : m_worker(::CreateThread(nullptr, 0, &AsyncMoveAdvisor::ThreadEntry, this, 0, nullptr)) {}
 
-	~AsyncMoveAdvisor()
+	// Signals the worker to stop (sets m_shuttingDown, bumps the
+	// generation so any in-flight Search() aborts on its very next node
+	// check, wakes the condition variable) WITHOUT joining or detaching.
+	// Idempotent -- safe to call multiple times (e.g. once early from
+	// main.cpp's DllMain, then again implicitly via the destructor).
+	// Exists so shutdown can be signalled as early as possible: the
+	// destructor alone only fires from the CRT's static-destruction pass,
+	// which for a DLL_PROCESS_DETACH-driven teardown runs AFTER
+	// scriptUnregister() and any other DllMain work -- calling this
+	// first gives the worker that entire extra window to actually finish
+	// before the destructor's own bounded wait even begins.
+	void RequestStop()
 	{
 		{
 			std::lock_guard<std::mutex> lock(m_jobMutex);
+			if (m_shuttingDown)
+				return;
 			m_shuttingDown = true;
 			m_generation.fetch_add(1, std::memory_order_relaxed);
 		}
 		m_jobCv.notify_all();
-		if (!m_worker.joinable())
+	}
+
+	~AsyncMoveAdvisor()
+	{
+		RequestStop();
+		if (!m_worker)
 			return;
 		if (AsyncMoveAdvisorDetail::g_processDetaching.load())
 		{
-			// join() here can deadlock against our own DllMain (see this
-			// file's own header comment) -- so never join() in this
-			// branch. But don't just detach() immediately either: give
-			// the worker a bounded chance to actually finish first, by
-			// polling m_workerExited (never the thread handle) -- see
-			// the header comment for exactly why that's safe against the
-			// same deadlock join() risks, and why it matters for
-			// ScriptHookRDR2.dev's hot-reload specifically (unlike real
-			// process exit, that scenario genuinely unmaps this module
-			// while the process keeps running).
-			auto deadline = std::chrono::steady_clock::now() + AsyncMoveAdvisorDetail::kProcessDetachWaitTimeout;
-			while (!m_workerExited.load() && std::chrono::steady_clock::now() < deadline)
-				std::this_thread::sleep_for(std::chrono::milliseconds(1));
-			// Always detach() here, whether the worker already exited or
-			// the wait timed out: detach() never blocks, so it's safe
-			// unconditionally, and the std::thread object itself must be
-			// joined or detached or its destructor will std::terminate().
-			m_worker.detach();
+			// WaitForSingleObject-ing on this thread's own HANDLE from
+			// DllMain can deadlock against our own DllMain (see this
+			// file's own header comment) if allowed to block
+			// indefinitely -- so this never waits INFINITE here. But it
+			// doesn't just abandon the handle immediately either: give
+			// the worker a bounded chance to actually finish first. A
+			// bounded timeout keeps this exactly as safe as an immediate
+			// abandon against the DllMain deadlock risk: it can never
+			// block forever, only time out.
+			::WaitForSingleObject(m_worker, static_cast<DWORD>(AsyncMoveAdvisorDetail::kProcessDetachWaitTimeout.count()));
+			// Always close the handle here, whether the wait succeeded
+			// or timed out -- CloseHandle() never blocks on the thread
+			// itself finishing, it just releases OUR reference to it, so
+			// it's safe unconditionally.
+			::CloseHandle(m_worker);
 		}
 		else
 		{
 			// Normal lifetime (anything NOT torn down from
 			// DllMain(DLL_PROCESS_DETACH), e.g. a plain local instance) --
-			// join() is both safe and necessary here, so the worker is
-			// guaranteed to have stopped touching this object's members
-			// before they're destroyed.
-			m_worker.join();
+			// waiting unbounded is both safe and necessary here, so the
+			// worker is guaranteed to have stopped touching this object's
+			// members before they're destroyed.
+			::WaitForSingleObject(m_worker, INFINITE);
+			::CloseHandle(m_worker);
 		}
 	}
 
@@ -287,6 +309,15 @@ public:
 	}
 
 private:
+	// Trampoline CreateThread actually calls (must match
+	// LPTHREAD_START_ROUTINE's plain DWORD WINAPI(LPVOID) signature --
+	// CreateThread cannot bind to a non-static member function directly).
+	static DWORD WINAPI ThreadEntry(LPVOID param)
+	{
+		static_cast<AsyncMoveAdvisor*>(param)->WorkerLoop();
+		return 0;
+	}
+
 	void WorkerLoop()
 	{
 		AsyncMoveAdvisorDetail::g_liveWorkerCount.fetch_add(1, std::memory_order_relaxed);
@@ -304,13 +335,6 @@ private:
 				if (m_shuttingDown)
 				{
 					AsyncMoveAdvisorDetail::g_liveWorkerCount.fetch_sub(1, std::memory_order_relaxed);
-					// Set BEFORE returning -- this is the signal the
-					// destructor's bounded wait polls (see its own
-					// comment), and it must land before anything in this
-					// thread's own exit sequence could need the loader
-					// lock, which starts only once this function actually
-					// returns.
-					m_workerExited.store(true, std::memory_order_release);
 					return;
 				}
 				key = m_pendingKey;
@@ -367,12 +391,6 @@ private:
 	std::mutex m_resultMutex;
 	Published m_latest;
 
-	// Set by WorkerLoop() immediately before it returns on shutdown;
-	// polled (never joined) by the destructor's process-detaching
-	// branch. See both call sites' own comments for why this is safe
-	// where join() would not be.
-	std::atomic<bool> m_workerExited{ false };
-
 	// Test-only, see Testing_SetArtificialJobDelay(). Milliseconds, 0 = off.
 	std::atomic<long long> m_testDelayMs{ 0 };
 
@@ -381,5 +399,5 @@ private:
 	// C++ constructs members in DECLARATION order regardless of
 	// initializer-list order, so this guarantees they're all already
 	// alive before the worker can touch them.
-	std::thread m_worker;
+	HANDLE m_worker;
 };
