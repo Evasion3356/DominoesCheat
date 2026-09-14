@@ -7,6 +7,22 @@
 
 	This selector is exact for the supplied native candidate list. It does
 	not generate hypothetical board placements or guess their order/totals.
+
+	Also here (2026-09-13, decision-engine pass): the two other rule-
+	dependent facts the search needs, both read straight off the script:
+	  - RoundedPipTotal(): func_357 (line ~14897) -- the per-seat remaining-
+	    pip total the round-end scorer actually uses. Plain pip sum for
+	    Block/Draw; All Fives rounds it to the NEAREST multiple of five
+	    (`num = num + 2; num = num - (num % 5)`), All Threes to the nearest
+	    multiple of three (`+1`, `% 3`). func_169 (blocked round) and the
+	    domino-out path (line ~8553, via func_343) both pick the round
+	    winner and pay them by THIS total, not by raw pips.
+	  - DrawsFromBoneyard(): func_166 (line ~8632) returns 0 immediately
+	    for the Block rules hash and otherwise draws from the boneyard
+	    until the seat can play or the boneyard/19-tile hand cap runs out.
+	    Draw, All Fives and All Threes all draw; an undecoded rules id is
+	    treated as drawing too, since "anything but Block draws" is the
+	    script's own test.
 */
 #pragma once
 
@@ -45,6 +61,29 @@ namespace DominoAiPolicy
 	inline bool AlwaysUsesPipPriority(Rules rules)
 	{
 		return rules == Rules::Block || rules == Rules::Draw;
+	}
+
+	// func_166: only the Block rules never touch the boneyard.
+	inline bool DrawsFromBoneyard(Rules rules)
+	{
+		return rules != Rules::Block;
+	}
+
+	// func_357: the remaining-hand total the round-end scorer compares
+	// and pays out. `pipTotal` is the plain sum of the seat's tile pips.
+	inline int RoundedPipTotal(Rules rules, int pipTotal)
+	{
+		if (rules == Rules::AllFives)
+		{
+			int n = pipTotal + 2;
+			return n - (n % 5);
+		}
+		if (rules == Rules::AllThrees)
+		{
+			int n = pipTotal + 1;
+			return n - (n % 3);
+		}
+		return pipTotal;
 	}
 
 	inline int ScoringPoints(Rules rules, int resultingEndTotal)

@@ -106,6 +106,13 @@ namespace Localization
 	// BET LOW/MEDIUM/HIGH -- not a real dominoes term, just a threshold
 	// this mod picked; adjust ClassifyBlockingSafety()'s cutoffs directly
 	// if they read wrong in practice.
+	// Since the 2026-09-13 decision-engine pass, DrawMoveSafetyStatus()
+	// keys these labels on the SEARCH VERDICT rather than the 1-ply
+	// respond count: Safe = the recommended line wins the round/game
+	// under the model, Risky = undecided within the search budget or a
+	// scoreless tie, Very Risky = every line loses (the advice is the
+	// least-bad one). ClassifyBlockingSafety() below is the original
+	// count-based mapping, kept for reference.
 	enum class BlockingSafety { Safe, Risky, VeryRisky };
 	BlockingSafety ClassifyBlockingSafety(std::int32_t opponentRespondCount);
 	const char* BlockingSafetyLabel(BlockingSafety safety);

@@ -535,6 +535,55 @@ endgames against an independent exhaustive policy solver. Prediction
 quality is still conditional on the existing board abstraction; live
 comparison of logged candidates with actual NPC moves remains necessary.
 
+## Decision engine (Session 11, 2026-09-13)
+
+A deep review of `DominoSearch.h` found the real reason live advice
+still lost: the evaluation was win/loss/tie only, and because the
+scripted opponent policy collapses the tree, the search solves most
+positions from the first move -- so every move in a solved-lost
+position scored identically and the choice fell through to the
+highest-pip tiebreak, i.e. the original 1-ply heuristic in disguise.
+Rewritten (all unit-tested against an exhaustive oracle, NOT yet
+live-tested):
+
+- **Net-points evaluation** in the game's own payout, traced from
+  `func_169`/`func_343`/`func_357`: the seat that dominoes (or, on a
+  block, the UNIQUE lowest rounded total -- a tie pays nobody) is paid
+  every other seat's total; All Fives/All Threes round each total to
+  the nearest multiple of 5/3 (`DominoAiPolicy::RoundedPipTotal`).
+  Score = (my gain - winner's gain) with a game win/loss (target
+  reached) dominating, and a shorter-win/longer-loss tiebreak below
+  the points scale.
+- **Boneyard draws modeled** from the known draw order (`func_166`/
+  `func_611`: draw until playable, boneyard empty, or 19-tile cap) for
+  every non-Block rule set, so 2/3-seat tables get the real search.
+  Under Block the boneyard is never touched. The 1-ply fallback and the
+  `deckCursor >= 28` gate are deleted; the opening move is searched too.
+- **Game-outcome awareness**: `seat.f_2` (accumulated score) and
+  `Round.f_666.f_14[0]` (points target, `kPointsTargetFieldOffset`,
+  header-word convention) feed the snapshot. Both are statically traced
+  only; `DetermineBestMove()` drops them for the decision if the target
+  isn't 10..1000 or any score isn't in `[0, target)`, and
+  `ProbeBestMove` logs the raw values for a live check.
+- **Root scoring bonus** on All Fives/All Threes: the native candidate
+  list's `f_4` (resulting end total) for the local player's own hand
+  credits an immediate scoring play (`QueryNativeCandidates()`, shared
+  with `LogOpponentPredictions()`). Deeper scoring plays remain
+  unmodeled; scoring-mode opponents are still searched paranoidly.
+- **Exactness**: an iteration whose explored tree never hit the depth
+  horizon is exact and stops deepening (replaces the old "score
+  magnitude means solved" rule). Root moves are re-ordered by the
+  previous iteration and searched with a real alpha window.
+- **HUD**: the advice line appends the line's net points (`+12`, `-8`,
+  `~` prefix = horizon estimate); SAFE/RISKY/VERY RISKY now mean
+  "wins under the model" / "undecided or tie" / "every line loses,
+  this is the least bad".
+
+Benchmarks (scratch harness, 1 s budget, 7-tile hands, first move):
+Block/Draw 4-seat solves in ~1 ms; paranoid (All Fives/Threes/Unknown)
+3-seat solves in <150 ms, 4-seat reaches ~25 plies unsolved at the
+first move and is exact later in the round.
+
 ## Advisor runtime
 
 `DominoCheat.ini`, next to the ASI, now has an `[Advisor]` section with
@@ -632,11 +681,15 @@ CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
    (up to 19) tile dump shows the real extra tile(s) rather than garbage.
 3. **Trace kSeatActiveFlagOffset's real meaning** (reads 100 when
    occupied, 0 when empty) -- low priority, not blocking anything.
-4. Model boneyard draws inside `DominoSearch.h` for the <4-seat case
-   (the remaining boneyard order is itself fully known/deterministic,
-   see this file's own hidden-information paragraph above) -- would let
-   the deep search replace the 1-ply fallback in that case too, instead
-   of only when all 4 seats are dealt. Separately, WHICH end to play a
+4. DONE (Session 11): boneyard draws are modeled and the 1-ply
+   fallback is gone. Still open from that pass: live-confirm the
+   points-target/score reads (`ProbeBestMove` logs them) and, the
+   biggest remaining lever, the scoring-mode opponent model -- the AI
+   prefers a scoring placement when one exists, which needs the
+   board's real end total; `LogOpponentPredictions` already logs each
+   opponent's native candidate totals, so comparing those against the
+   moves the NPCs actually make would show how often the paranoid
+   fallback is wrong. Separately, WHICH end to play a
    legal tile on when a real board has independent same-value ends, and
    porting func_352/353's own "prefer a scoring-bonus tile" step, both
    still need the placement-commit native's board-layout internals

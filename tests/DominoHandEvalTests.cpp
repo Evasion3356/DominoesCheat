@@ -225,33 +225,182 @@ namespace
 	void TestSearchTerminalScores()
 	{
 		using namespace DominoSearch;
+		constexpr std::int32_t lo = std::numeric_limits<std::int32_t>::min();
+		constexpr std::int32_t hi = std::numeric_limits<std::int32_t>::max();
 		GameState state = TwoSeatState({ Tile{0,1} }, { Tile{5,6} }, { 3 });
 		state.passStreak = 2;
 		int budget = 0;
 		bool complete = true;
-		auto score = detail::Search(state, 0, 4, -2000000, 2000000, budget, complete);
-		Check(complete && score >= detail::kWinScore && budget == 0,
-			"blocked win is terminal even with no budget", "terminal win was treated as a small pip estimate");
+		auto score = detail::Search(state, 0, 4, lo, hi, budget, complete);
+		Check(complete && score == 11 * detail::kPointUnit + 4 && budget == 0,
+			"blocked win scores the opponent's remaining pips as net points, even with no budget", "expected +11 points (the [5|6] left in the opponent's hand) plus the remaining-depth tiebreak");
 		std::swap(state.hands[0][0], state.hands[1][0]);
-		score = detail::Search(state, 0, 4, -2000000, 2000000, budget, complete);
-		Check(complete && score <= -detail::kWinScore,
-			"blocked loss dominates heuristic scores", "terminal loss was treated as an ordinary cutoff");
+		score = detail::Search(state, 0, 4, lo, hi, budget, complete);
+		Check(complete && score == -(11 * detail::kPointUnit + 4),
+			"blocked loss scores my own remaining pips as conceded points", "expected -11 points minus the remaining-depth tiebreak");
 		state.hands[0][0] = Tile{1,4};
 		state.hands[1][0] = Tile{2,3};
-		score = detail::Search(state, 0, 4, -2000000, 2000000, budget, complete);
+		score = detail::Search(state, 0, 4, lo, hi, budget, complete);
 		Check(score == 0, "equal blocked pip totals remain neutral", "tie was classified as a win or loss");
 		state.passStreak = 0;
 		state.handCounts[0] = 0;
-		auto earlyWin = detail::Search(state, 0, 5, -2000000, 2000000, budget, complete);
-		auto lateWin = detail::Search(state, 0, 1, -2000000, 2000000, budget, complete);
-		Check(complete && earlyWin > lateWin && lateWin >= detail::kWinScore,
+		auto earlyWin = detail::Search(state, 0, 5, lo, hi, budget, complete);
+		auto lateWin = detail::Search(state, 0, 1, lo, hi, budget, complete);
+		Check(complete && earlyWin > lateWin && lateWin > 0,
 			"prefer earlier wins and recognize empty hands without budget", "remaining-depth preference is reversed");
 		state.handCounts[0] = 1;
 		state.handCounts[1] = 0;
-		auto earlyLoss = detail::Search(state, 0, 5, -2000000, 2000000, budget, complete);
-		auto lateLoss = detail::Search(state, 0, 1, -2000000, 2000000, budget, complete);
-		Check(earlyLoss < lateLoss && lateLoss <= -detail::kWinScore,
+		auto earlyLoss = detail::Search(state, 0, 5, lo, hi, budget, complete);
+		auto lateLoss = detail::Search(state, 0, 1, lo, hi, budget, complete);
+		Check(earlyLoss < lateLoss && lateLoss < 0,
 			"prefer delaying a forced loss", "remaining-depth loss preference is reversed");
+
+		// Three seats blocked with TWO opponents tied for lowest: func_169
+		// declares no winner (num3 = -1), so nobody scores -- a tie for
+		// me, not the loss "best opponent beats me" would have implied.
+		GameState three = TwoSeatState({ Tile{6,6} }, { Tile{0,1} }, { 3 });
+		three.occupied[2] = true;
+		three.hands[2][0] = Tile{0,1};
+		three.handCounts[2] = 1;
+		three.passStreak = 3;
+		score = detail::Search(three, 0, 4, lo, hi, budget, complete);
+		Check(score == 0, "a tie for lowest total among opponents means no winner and no points", "the script pays nobody on a tied block");
+
+		// All Fives rounds every seat's total to the nearest multiple of
+		// five before comparing and paying (func_357): [1|1] -> 0 beats
+		// [3|4] -> 5 and pays 5, and [2|2] -> 5 ties [3|3] -> 5.
+		GameState fives = TwoSeatState({ Tile{1,1} }, { Tile{3,4} }, { 6 });
+		fives.rules = DominoAiPolicy::Rules::AllFives;
+		fives.passStreak = 2;
+		score = detail::Search(fives, 0, 4, lo, hi, budget, complete);
+		Check(score == 5 * detail::kPointUnit + 4, "All Fives pays the opponent's total rounded to the nearest five", "expected +5 ([3|4] = 7 rounds to 5)");
+		fives.hands[0][0] = Tile{2,2};
+		fives.hands[1][0] = Tile{3,3};
+		score = detail::Search(fives, 0, 4, lo, hi, budget, complete);
+		Check(score == 0, "All Fives rounding can turn a 4-vs-6 block into a scoreless tie", "expected both totals to round to 5");
+		Check(DominoAiPolicy::RoundedPipTotal(DominoAiPolicy::Rules::AllThrees, 7) == 6 &&
+			DominoAiPolicy::RoundedPipTotal(DominoAiPolicy::Rules::AllThrees, 8) == 9 &&
+			DominoAiPolicy::RoundedPipTotal(DominoAiPolicy::Rules::Block, 8) == 8,
+			"All Threes rounds to the nearest multiple of three; Block keeps raw pips", "func_357 rounding mismatch");
+	}
+
+	// The whole point of the net-points evaluation: when every line is
+	// a loss, prefer the smaller loss; when every line wins, prefer the
+	// bigger payout. Hand-built from the game's own payout rule.
+	void TestSearchMaximizesNetPoints()
+	{
+		// 2 seats, Block rules (opponent always plays its highest-pip
+		// legal tile). Open end 4. Me: [4|6] (10 pips) or [4|0] (4).
+		// Opponent: [6|6] and [0|3].
+		//  - Play [4|6]: end 6, opponent plays [6|6] (end 6), I pass, the
+		//    opponent passes ([0|3] doesn't fit) -> blocked: me 4, opp 3
+		//    -> opponent wins 4 points.
+		//  - Play [4|0]: end 0, opponent plays [0|3] (end 3), I pass,
+		//    opponent passes -> blocked: me 10, opp 12 -> I win 12 points.
+		GameState state = TwoSeatState({ Tile{4,6}, Tile{0,4} }, { Tile{6,6}, Tile{0,3} }, { 4 });
+		state.rules = DominoAiPolicy::Rules::Block;
+		auto rec = DominoSearch::FindBestMove(state, 0, 20);
+		Check(rec.valid && rec.exact && rec.tile.low == 0 && rec.tile.high == 4 && rec.points == 12 &&
+			rec.outcome == DominoSearch::Outcome::RoundWin,
+			"search picks the line that wins 12 over the one that concedes 4", "expected [0|4] with +12 exact");
+
+		// Both lines lose against opponent [2|6], [0|1]:
+		//  - [4|6] -> [2|6] (end 2) -> pass -> pass: me 4, opp 1 -> -4.
+		//  - [0|4] -> [0|1] (end 1) -> pass -> pass: me 10, opp 8 -> -10.
+		GameState losing = TwoSeatState({ Tile{0,4}, Tile{4,6} }, { Tile{2,6}, Tile{0,1} }, { 4 });
+		losing.rules = DominoAiPolicy::Rules::Block;
+		rec = DominoSearch::FindBestMove(losing, 0, 20);
+		Check(rec.valid && rec.exact && rec.tile.low == 4 && rec.tile.high == 6 && rec.points == -4 &&
+			rec.outcome == DominoSearch::Outcome::RoundLoss,
+			"search concedes 4 rather than 10 when every line loses", "expected [4|6] with -4 exact");
+		Check(rec.completedDepth < 20, "a solved round stops deepening early", "exact search should not keep iterating to the depth cap");
+	}
+
+	// Draw/All Fives/All Threes tables: a seat with no legal move takes
+	// boneyard tiles in order until it can play (func_166). The draw
+	// order is fully known, so the search follows it exactly.
+	void TestSearchModelsBoneyardDraws()
+	{
+		// Me: [0|2], [1|1]. Opponent: [2|2], [0|0]. Open end 0.
+		// Boneyard (draw order): [1|2], [3|3].
+		// Block: [0|2] -> opp [2|2] -> I pass -> opp passes -> me 2 vs
+		//   opp 0 -> concede 2.
+		// Draw: [0|2] -> opp [2|2] (end 2) -> I can't play, draw [1|2],
+		//   play it (end 1) -> opp can't play, draws [3|3], still can't,
+		//   boneyard empty -> pass -> I play [1|1] and domino out: the
+		//   opponent holds [0|0]+[3|3] = 6 -> +6.
+		GameState state = TwoSeatState({ Tile{0,2}, Tile{1,1} }, { Tile{2,2}, Tile{0,0} }, { 0 });
+		state.boneyard[0] = Tile{1,2};
+		state.boneyard[1] = Tile{3,3};
+		state.boneyardCount = 2;
+		state.rules = DominoAiPolicy::Rules::Block;
+		auto block = DominoSearch::FindBestMove(state, 0, 30);
+		Check(block.valid && block.exact && block.points == -2, "Block rules never draw: leftover boneyard tiles stay out of play", "expected -2 (blocked with [1|1] in hand)");
+		state.rules = DominoAiPolicy::Rules::Draw;
+		auto draw = DominoSearch::FindBestMove(state, 0, 30);
+		Check(draw.valid && draw.exact && draw.points == 6 && draw.outcome == DominoSearch::Outcome::RoundWin,
+			"Draw rules follow the known boneyard order for every seat", "expected +6 (opponent forced to draw the dead [3|3])");
+
+		GameState reordered = state;
+		std::swap(reordered.boneyard[0], reordered.boneyard[1]);
+		Check(!(state == reordered), "boneyard order is part of the decision snapshot", "a reshuffled boneyard must not match the old key");
+	}
+
+	void TestSearchOpeningMove()
+	{
+		GameState state = TwoSeatState({ Tile{6,6}, Tile{0,1}, Tile{2,5} }, { Tile{1,1}, Tile{5,5} }, {});
+		auto moves = DominoSearch::detail::LegalMoves(state, 0);
+		Check(moves.count == 3 && moves.moves[0].endPip == -1, "with no open ends every hand tile is an opening move", "expected 3 opening candidates");
+		auto next = DominoSearch::detail::ApplyMove(state, 0, moves.moves[2]);
+		Check(next.ends.count == 2 && next.ends.pips[0] == 2 && next.ends.pips[1] == 5,
+			"an opening tile opens both of its pips", "expected ends {2,5}");
+		next = DominoSearch::detail::ApplyMove(state, 0, moves.moves[0]);
+		Check(next.ends.count == 1 && next.ends.pips[0] == 6, "an opening double opens one distinct pip", "expected ends {6}");
+		auto rec = DominoSearch::FindBestMove(state, 0, 20);
+		Check(rec.valid && rec.endPip == -1, "the opening move is searched rather than left to the fallback", "expected a valid opening recommendation");
+	}
+
+	// Game-target awareness: an opponent at 55/60 winning even a small
+	// round ends the game, so the search must prefer conceding more
+	// points to a different opponent. Seats 0 (me), 1 (A, 55 points),
+	// 2 (B). Turn order 0 -> 2 -> 1. Open end 4, Block rules.
+	//  - [4|6]: B passes, A plays [6|6] and dominoes: A gets my [4|0]
+	//    (4) + B's [0|3] (3) = 7 -> 62 >= 60, GAME LOSS.
+	//  - [4|0]: B plays [0|3] and dominoes: B gets 10 + 12 = 22 -> a
+	//    round loss of 22, B at 22.
+	void TestSearchAvoidsHandingOpponentTheGame()
+	{
+		GameState state = TwoSeatState({ Tile{4,6}, Tile{0,4} }, { Tile{6,6} }, { 4 });
+		state.occupied[2] = true;
+		state.hands[2][0] = Tile{0,3};
+		state.handCounts[2] = 1;
+		state.rules = DominoAiPolicy::Rules::Block;
+
+		auto roundOnly = DominoSearch::FindBestMove(state, 0, 20);
+		Check(roundOnly.valid && roundOnly.exact && roundOnly.tile.high == 6 && roundOnly.points == -7,
+			"without a target the smaller round loss (-7) is preferred", "expected [4|6] conceding 7");
+
+		state.pointsTarget = 60;
+		state.scores = { 0, 55, 0 };
+		auto aware = DominoSearch::FindBestMove(state, 0, 20);
+		Check(aware.valid && aware.exact && aware.tile.high == 4 && aware.tile.low == 0 && aware.points == -22 &&
+			aware.outcome == DominoSearch::Outcome::RoundLoss,
+			"with A at 55/60 the search concedes 22 to B rather than 7 to A", "expected [0|4]: the -7 line is a game loss");
+
+		// Root scoring bonus (All Fives end-total credit read at the root):
+		// if playing [4|6] itself scores me 5 and I sit at 55/60, the game
+		// ends in my favour before A ever moves.
+		state.scores = { 55, 55, 0 };
+		state.rootMoveBonusPoints[0] = 5;
+		auto bonus = DominoSearch::FindBestMove(state, 0, 20);
+		Check(bonus.valid && bonus.exact && bonus.tile.high == 6 && bonus.outcome == DominoSearch::Outcome::GameWin && bonus.points == 5,
+			"a root scoring bonus that reaches the target is an immediate game win", "expected [4|6] as GAME WIN +5");
+		state.scores = { 0, 0, 0 };
+		state.pointsTarget = 0;
+		state.rootMoveBonusPoints[0] = 5;
+		bonus = DominoSearch::FindBestMove(state, 0, 20);
+		Check(bonus.valid && bonus.tile.high == 6 && bonus.points == -2,
+			"a root scoring bonus nets against the round result", "expected +5 bonus - 7 conceded = -2");
 	}
 
 	void TestSearchSnapshotAndTurnHandling()
@@ -288,46 +437,117 @@ namespace
 		Check(!FindBestMove(changed, 0, 8).valid, "finished rounds produce no advice", "opponent already went out");
 	}
 
-	// Exhaustive outcome-only reference: no pruning, cutoff, budget or
+	// Exhaustive NET-POINTS reference: no pruning, cutoff, budget or
 	// production terminal scorer. Shares only move generation/transitions.
-	int ReferenceOutcome(const GameState& state, int mySeat)
+	// Independently codes the script's own round payout (func_169 /
+	// func_343 / func_357): the seat that empties its hand, else the
+	// unique lowest rounded total on a block, is paid every other seat's
+	// rounded total; a tie for lowest pays nobody. Draws follow func_166.
+	int ReferenceRounded(const GameState& state, int seat)
 	{
-		if (state.handCounts[mySeat] == 0)
-			return 1;
+		return DominoAiPolicy::RoundedPipTotal(state.rules, HandPipTotal(state.hands[seat].data(), state.handCounts[seat]));
+	}
+
+	int ReferenceNetPoints(const GameState& state, int mySeat)
+	{
 		int occupied = 0;
-		int myPips = HandPipTotal(state.hands[mySeat].data(), state.handCounts[mySeat]);
-		int opponentPips = 1000;
+		int winner = -1;
 		for (int seat = 0; seat < DominoSearch::kMaxSeats; seat++)
 		{
 			if (!state.occupied[seat])
 				continue;
 			occupied++;
-			if (seat == mySeat)
-				continue;
 			if (state.handCounts[seat] == 0)
-				return -1;
-			opponentPips = std::min(opponentPips, HandPipTotal(state.hands[seat].data(), state.handCounts[seat]));
+				winner = seat;
 		}
-		if (state.passStreak >= occupied)
-			return (opponentPips > myPips) - (opponentPips < myPips);
-		auto moves = DominoSearch::detail::LegalMoves(state, state.turnSeat);
+		bool over = winner >= 0;
+		if (!over && state.passStreak >= occupied)
+		{
+			over = true;
+			int lowest = 1000;
+			for (int seat = 0; seat < DominoSearch::kMaxSeats; seat++)
+			{
+				if (!state.occupied[seat])
+					continue;
+				int total = ReferenceRounded(state, seat);
+				if (total == lowest)
+					winner = -1;
+				else if (total < lowest)
+				{
+					lowest = total;
+					winner = seat;
+				}
+			}
+		}
+		if (over)
+		{
+			if (winner < 0)
+				return 0;
+			int payout = 0;
+			for (int seat = 0; seat < DominoSearch::kMaxSeats; seat++)
+				if (state.occupied[seat] && seat != winner)
+					payout += ReferenceRounded(state, seat);
+			return winner == mySeat ? payout : -payout;
+		}
+
+		GameState position = state;
+		auto moves = DominoSearch::detail::LegalMoves(position, position.turnSeat);
+		if (moves.Empty() && position.rules != DominoAiPolicy::Rules::Block)
+		{
+			while (position.boneyardNext < position.boneyardCount && position.handCounts[position.turnSeat] < 19)
+			{
+				position.hands[position.turnSeat][position.handCounts[position.turnSeat]++] = position.boneyard[position.boneyardNext++];
+				moves = DominoSearch::detail::LegalMoves(position, position.turnSeat);
+				if (!moves.Empty())
+					break;
+			}
+		}
 		if (moves.Empty())
-			return ReferenceOutcome(DominoSearch::detail::ApplyPass(state, state.turnSeat), mySeat);
-		bool maximizing = state.turnSeat == mySeat;
+			return ReferenceNetPoints(DominoSearch::detail::ApplyPass(position, position.turnSeat), mySeat);
+		bool maximizing = position.turnSeat == mySeat;
 		int requiredPips = -1;
 		if (!maximizing && moves.count <= 15 &&
-			(state.rules == DominoAiPolicy::Rules::Block || state.rules == DominoAiPolicy::Rules::Draw))
+			(position.rules == DominoAiPolicy::Rules::Block || position.rules == DominoAiPolicy::Rules::Draw))
 			for (const auto& move : moves)
 				requiredPips = std::max(requiredPips, move.tile.low + move.tile.high);
-		int best = maximizing ? -2 : 2;
+		int best = maximizing ? -1000 : 1000;
 		for (const auto& move : moves)
 		{
 			if (requiredPips >= 0 && move.tile.low + move.tile.high != requiredPips)
 				continue;
-			int outcome = ReferenceOutcome(DominoSearch::detail::ApplyMove(state, state.turnSeat, move), mySeat);
+			int outcome = ReferenceNetPoints(DominoSearch::detail::ApplyMove(position, position.turnSeat, move), mySeat);
 			best = maximizing ? std::max(best, outcome) : std::min(best, outcome);
 		}
 		return best;
+	}
+
+	int ReferenceOutcome(const GameState& state, int mySeat)
+	{
+		int points = ReferenceNetPoints(state, mySeat);
+		return (points > 0) - (points < 0);
+	}
+
+	// What the OLD binary evaluation effectively recommended: among the
+	// moves with the best outcome sign, the highest-pip tile (its
+	// tiebreak). Returns that move's exact net points.
+	int OldStyleChoicePoints(const GameState& state, int mySeat)
+	{
+		int bestSign = -2;
+		int bestPips = -1;
+		int chosenPoints = 0;
+		for (const auto& move : DominoSearch::detail::LegalMoves(state, mySeat))
+		{
+			int points = ReferenceNetPoints(DominoSearch::detail::ApplyMove(state, mySeat, move), mySeat);
+			int sign = (points > 0) - (points < 0);
+			int pips = move.tile.PipTotal();
+			if (sign > bestSign || (sign == bestSign && pips > bestPips))
+			{
+				bestSign = sign;
+				bestPips = pips;
+				chosenPoints = points;
+			}
+		}
+		return chosenPoints;
 	}
 
 	void TestSearchAgainstExhaustiveEndgames()
@@ -370,14 +590,78 @@ namespace
 				if (rec.valid && move.handIndex == rec.handIndex && move.endPip == rec.endPip)
 				{
 					legal = true;
-					int actual = ReferenceOutcome(DominoSearch::detail::ApplyMove(state, mySeat, move), mySeat);
-					correct = correct && actual == ReferenceOutcome(state, mySeat);
+					int actual = ReferenceNetPoints(DominoSearch::detail::ApplyMove(state, mySeat, move), mySeat);
+					int optimal = ReferenceNetPoints(state, mySeat);
+					correct = correct && actual == optimal && rec.exact && rec.points == optimal;
 				}
 			correct = correct && legal;
 		}
 		std::printf("  Exhaustive comparison: %d legal decisions across 240 seeded 2/3/4-seat positions\n", decisions);
-		Check(correct && decisions > 100, "bounded search matches exhaustive small-endgame outcomes",
-			"an illegal or outcome-inferior move was recommended");
+		Check(correct && decisions > 100, "bounded search matches exhaustive small-endgame net points exactly",
+			"an illegal or points-inferior move was recommended, or the reported points/exactness disagree with the oracle");
+	}
+
+	// Same oracle, larger random endgames WITH a boneyard under every
+	// rule set (so draws and All Fives/All Threes rounding both get
+	// exercised), and a count of how often net points beat the old
+	// binary evaluation's effective choice.
+	void TestSearchNetPointsAgainstExhaustiveDrawEndgames()
+	{
+		std::mt19937 random(9137);
+		std::array<int, kTileSetSize> deck{};
+		for (int i = 0; i < kTileSetSize; i++)
+			deck[i] = i;
+		bool correct = true;
+		int decisions = 0;
+		int improved = 0;
+		int drawsUsed = 0;
+		const DominoAiPolicy::Rules ruleSets[] = { DominoAiPolicy::Rules::Block, DominoAiPolicy::Rules::Draw,
+			DominoAiPolicy::Rules::AllFives, DominoAiPolicy::Rules::AllThrees };
+		for (int sample = 0; sample < 320; sample++)
+		{
+			std::shuffle(deck.begin(), deck.end(), random);
+			GameState state;
+			int seats = 2 + sample % 3;
+			int mySeat = (sample / 3) % seats;
+			int tilesPerSeat = seats == 2 ? 3 : 2;
+			int cursor = 0;
+			for (int seat = 0; seat < seats; seat++)
+			{
+				state.occupied[seat] = true;
+				state.handCounts[seat] = tilesPerSeat;
+				for (int i = 0; i < tilesPerSeat; i++)
+					state.hands[seat][i] = DecodeTile(deck[cursor++]);
+			}
+			Tile board = DecodeTile(deck[cursor++]);
+			state.ends.count = 2;
+			state.ends.pips[0] = board.low;
+			state.ends.pips[1] = board.high;
+			int boneyard = 1 + sample % 3;
+			for (int i = 0; i < boneyard; i++)
+				state.boneyard[i] = DecodeTile(deck[cursor++]);
+			state.boneyardCount = boneyard;
+			state.rules = ruleSets[(sample / 4) % 4];
+			state.turnSeat = mySeat;
+			if (DominoSearch::detail::LegalMoves(state, mySeat).Empty())
+				continue;
+			decisions++;
+			auto rec = FindBestMove(state, mySeat, 60);
+			int optimal = ReferenceNetPoints(state, mySeat);
+			int actual = -1000;
+			for (const auto& move : DominoSearch::detail::LegalMoves(state, mySeat))
+				if (rec.valid && move.handIndex == rec.handIndex && move.endPip == rec.endPip)
+					actual = ReferenceNetPoints(DominoSearch::detail::ApplyMove(state, mySeat, move), mySeat);
+			correct = correct && rec.valid && rec.exact && actual == optimal && rec.points == optimal;
+			if (optimal > OldStyleChoicePoints(state, mySeat))
+				improved++;
+			if (state.rules != DominoAiPolicy::Rules::Block)
+				drawsUsed++;
+		}
+		std::printf("  Boneyard/rounding comparison: %d decisions, %d strictly more points than the old binary choice\n", decisions, improved);
+		Check(correct && decisions > 200, "search matches exhaustive net points with boneyard draws and scoring-mode rounding",
+			"points-inferior recommendation, or reported points/exactness disagree with the oracle");
+		Check(improved > 0 && drawsUsed > 0, "net-points evaluation strictly improves on the old outcome-only choice in seeded endgames",
+			"expected at least one position where the old highest-pip tiebreak leaves points on the table");
 	}
 
 	void TestScriptedCandidateSelection()
@@ -846,8 +1130,13 @@ int main()
 	TestSearchLooksPastImmediateReply();
 	TestSearchBudgetKeepsCompletedIteration();
 	TestSearchTerminalScores();
+	TestSearchMaximizesNetPoints();
+	TestSearchModelsBoneyardDraws();
+	TestSearchOpeningMove();
+	TestSearchAvoidsHandingOpponentTheGame();
 	TestSearchSnapshotAndTurnHandling();
 	TestSearchAgainstExhaustiveEndgames();
+	TestSearchNetPointsAgainstExhaustiveDrawEndgames();
 	TestScriptedCandidateSelection();
 	TestScriptedSeatOrder();
 	TestPolicyRestrictionsPreserveUncertainty();
