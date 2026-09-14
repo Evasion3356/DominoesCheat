@@ -95,13 +95,23 @@ namespace
 		advisor["WallClockBudget"] = std::to_string(g_values.AdvisorWallClockBudgetMs);
 
 		g_values.ShowOpponentHands = GetOr(general, "ShowOpponentHands", defaults.ShowOpponentHands);
-		g_values.ShowBoneyardPrediction = GetOr(general, "ShowBoneyardPrediction", defaults.ShowBoneyardPrediction);
+		if (general.find("ShowBoneyard") != general.end())
+		{
+			g_values.ShowBoneyard = GetOr(general, "ShowBoneyard", defaults.ShowBoneyard);
+		}
+		else
+		{
+			// Preserve the user's setting from releases that called this a
+			// prediction, then write it back using the accurate key below.
+			g_values.ShowBoneyard = GetOr(general, "ShowBoneyardPrediction", defaults.ShowBoneyard);
+		}
+		general.erase("ShowBoneyardPrediction");
 		g_values.ShowAdvice = GetOr(general, "ShowAdvice", defaults.ShowAdvice);
 		g_values.ShowPlayableDomino = GetOr(general, "ShowPlayableDomino", defaults.ShowPlayableDomino);
 		g_values.Language = GetOr(general, "Language", defaults.Language);
 
 		SetBool(general, "ShowOpponentHands", g_values.ShowOpponentHands);
-		SetBool(general, "ShowBoneyardPrediction", g_values.ShowBoneyardPrediction);
+		SetBool(general, "ShowBoneyard", g_values.ShowBoneyard);
 		SetBool(general, "ShowAdvice", g_values.ShowAdvice);
 		SetBool(general, "ShowPlayableDomino", g_values.ShowPlayableDomino);
 		general["Language"] = g_values.Language;
@@ -115,7 +125,6 @@ namespace
 		g_values.OpponentHandBaseX = GetOr(hud, "OpponentHandBaseX", defaults.OpponentHandBaseX);
 		g_values.OpponentHandBaseY = GetOr(hud, "OpponentHandBaseY", defaults.OpponentHandBaseY);
 		g_values.OpponentHandStepY = GetOr(hud, "OpponentHandStepY", defaults.OpponentHandStepY);
-		g_values.OpponentTileIconLabelOffsetX = GetOr(hud, "OpponentTileIconLabelOffsetX", defaults.OpponentTileIconLabelOffsetX);
 		g_values.OpponentTileIconSpacingX = GetOr(hud, "OpponentTileIconSpacingX", defaults.OpponentTileIconSpacingX);
 		g_values.OpponentTileIconWidth = GetOr(hud, "OpponentTileIconWidth", defaults.OpponentTileIconWidth);
 		g_values.OpponentTileIconHeight = GetOr(hud, "OpponentTileIconHeight", defaults.OpponentTileIconHeight);
@@ -137,7 +146,6 @@ namespace
 		SetFloat(hud, "OpponentHandBaseX", g_values.OpponentHandBaseX);
 		SetFloat(hud, "OpponentHandBaseY", g_values.OpponentHandBaseY);
 		SetFloat(hud, "OpponentHandStepY", g_values.OpponentHandStepY);
-		SetFloat(hud, "OpponentTileIconLabelOffsetX", g_values.OpponentTileIconLabelOffsetX);
 		SetFloat(hud, "OpponentTileIconSpacingX", g_values.OpponentTileIconSpacingX);
 		SetFloat(hud, "OpponentTileIconWidth", g_values.OpponentTileIconWidth);
 		SetFloat(hud, "OpponentTileIconHeight", g_values.OpponentTileIconHeight);
@@ -162,8 +170,8 @@ namespace
 				Log::Write("Config::Reload -- failed to open {} for writing", NarrowPath(ResolveIniPath()));
 		}
 
-		Log::Write("Config::Reload -- loaded from {} (ShowOpponentHands={} ShowBoneyardPrediction={} AdvisorWallClockBudgetMs={})",
-			NarrowPath(ResolveIniPath()), g_values.ShowOpponentHands, g_values.ShowBoneyardPrediction,
+		Log::Write("Config::Reload -- loaded from {} (ShowOpponentHands={} ShowBoneyard={} AdvisorWallClockBudgetMs={})",
+			NarrowPath(ResolveIniPath()), g_values.ShowOpponentHands, g_values.ShowBoneyard,
 			g_values.AdvisorWallClockBudgetMs);
 	}
 }

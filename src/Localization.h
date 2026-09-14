@@ -7,8 +7,7 @@
 	BlackjackCheat's BET LOW/MEDIUM/HIGH, not a real dominoes term to
 	verify against a glossary), the world-space tile markers
 	(PlayThisTileMarker()/WinningTileMarker(), see DrawWorldMarkerOnTile()),
-	each opponent-hand row's header word (SeatWord(), see
-	DrawOpponentHandStatus()), and the boneyard readout's label
+	the boneyard readout's label
 	(BoneyardWord(), see DrawBoneyardStatus()). Everything else this mod draws (the
 	Debug-only raw text panel, DrawLine()/DrawPanel() in DominoCheat.cpp)
 	is #ifdef _DEBUG-only -- a dev diagnostic surface, never shown to an
@@ -124,14 +123,6 @@ namespace Localization
 	// short imperative/exclamation instead of a label).
 	const char* PlayThisTileMarker();
 	const char* WinningTileMarker();
-
-	// Per-seat hand row header word (DrawOpponentHandStatus()) -- "Seat",
-	// paired at the call site with the seat number as a plain digit, the
-	// same language-agnostic-numeral convention this file's tile
-	// notation ("[3|5]") already relies on. Opponent-only (see
-	// DrawOpponentHandStatus()'s own comment for why your own seat is
-	// never shown this way) so there's no "(you)" variant to localize.
-	const char* SeatWord();
 
 	// Boneyard readout label (DrawBoneyardStatus()).
 	const char* BoneyardWord();

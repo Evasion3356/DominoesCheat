@@ -108,24 +108,6 @@ namespace
 		"获胜出牌！",                   // zh-CN
 	};
 
-	// "Seat" -- per-seat hand block header (DrawSeatHandStatus()).
-	const char* const kSeatWords[kLanguageCount] =
-	{
-		"Seat",                       // en-US
-		"Siège",                      // fr-FR
-		"Platz",                      // de-DE
-		"Posto",                      // it-IT
-		"Asiento",                    // es-ES
-		"Assento",                    // pt-BR
-		"Miejsce",                    // pl-PL
-		"Место",                      // ru-RU
-		"자리",                        // ko-KR
-		"座位",                        // zh-TW
-		"席",                         // ja-JP
-		"Asiento",                    // es-MX
-		"座位",                        // zh-CN
-	};
-
 	// "Boneyard" -- DrawBoneyardStatus()'s own label.
 	const char* const kBoneyardWords[kLanguageCount] =
 	{
@@ -232,7 +214,6 @@ namespace Localization
 	const char* PlayThisTileMarker() { return kPlayThisTileMarkers[static_cast<int>(Current())]; }
 	const char* WinningTileMarker() { return kWinningTileMarkers[static_cast<int>(Current())]; }
 
-	const char* SeatWord() { return kSeatWords[static_cast<int>(Current())]; }
 	const char* BoneyardWord() { return kBoneyardWords[static_cast<int>(Current())]; }
 
 	const char* LanguageCode(Language lang)

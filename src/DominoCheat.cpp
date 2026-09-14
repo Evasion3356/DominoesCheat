@@ -216,7 +216,7 @@
 	    with all 4 seats occupied, 4*7=28 exhausts the ENTIRE boneyard at
 	    deal time (matches the deal loop's own total draw count exactly),
 	    meaning a full 4-player game leaves NOTHING for
-	    ShowBoneyardPrediction to show -- only relevant with 1-3 occupied
+	    ShowBoneyard to show -- only relevant with 1-3 occupied
 	    seats, where 28-(occupiedSeats*7) tiles remain undrawn and,
 	    because the whole boneyard is shuffled and fixed before a single
 	    tile is dealt (func_67 builds it BEFORE the per-seat deal loop
@@ -452,7 +452,7 @@
 	     (Config's OpponentTileIcon*) were ALSO copied from PokerCheat's
 	     own numbers at first -- CONFIRMED LIVE the same day, user-tuned
 	     via Reload Config against a real table (Width/Height=0.015/0.045,
-	     SpacingX=0.015, LabelOffsetX=0.035 -- notably smaller/narrower
+	     SpacingX=0.015 -- notably smaller/narrower
 	     than poker's portrait-card starting guess, confirming a domino
 	     tile face really is a different shape). Also added
 	     WorldMarkerOffsetX/Y/FontSize to Config -- a live user report
@@ -1726,10 +1726,9 @@ namespace DominoCheat
 		}
 
 #ifndef _DEBUG
-		constexpr float kReleaseOpponentHandBaseX = 0.15f;
+		constexpr float kReleaseOpponentHandBaseX = 0.17f;
 		constexpr float kReleaseOpponentHandBaseY = 0.86f;
 		constexpr float kReleaseOpponentHandStepY = -0.0915f;
-		constexpr float kReleaseOpponentTileIconLabelOffsetX = 0.035f; // CONFIRMED LIVE 2026-09-13, see Config::Values::OpponentTileIconLabelOffsetX's own comment
 		constexpr float kReleaseOpponentTileIconSpacingX = 0.015f; // CONFIRMED LIVE 2026-09-13, see Config::Values::OpponentTileIconSpacingX's own comment
 		constexpr float kReleaseOpponentTileIconWidth = 0.015f; // CONFIRMED LIVE 2026-09-13, see Config::Values::OpponentTileIconWidth's own comment
 		constexpr float kReleaseOpponentTileIconHeight = 0.045f;
@@ -1784,7 +1783,6 @@ namespace DominoCheat
 			float baseX = cfg.OpponentHandBaseX;
 			float baseY = cfg.OpponentHandBaseY;
 			float stepY = cfg.OpponentHandStepY;
-			float labelOffsetX = cfg.OpponentTileIconLabelOffsetX;
 			float iconSpacingX = cfg.OpponentTileIconSpacingX;
 			float iconWidth = cfg.OpponentTileIconWidth;
 			float iconHeight = cfg.OpponentTileIconHeight;
@@ -1792,7 +1790,6 @@ namespace DominoCheat
 			float baseX = kReleaseOpponentHandBaseX;
 			float baseY = kReleaseOpponentHandBaseY;
 			float stepY = kReleaseOpponentHandStepY;
-			float labelOffsetX = kReleaseOpponentTileIconLabelOffsetX;
 			float iconSpacingX = kReleaseOpponentTileIconSpacingX;
 			float iconWidth = kReleaseOpponentTileIconWidth;
 			float iconHeight = kReleaseOpponentTileIconHeight;
@@ -1814,11 +1811,7 @@ namespace DominoCheat
 
 				float y = baseY + static_cast<float>(denseRow[seat] - 1) * stepY;
 
-				std::ostringstream label;
-				label << Localization::SeatWord() << " " << seat;
-				DrawBgText(label.str(), baseX, y, 20, 255, 210, 140);
-
-				float iconX = baseX + labelOffsetX;
+				float iconX = baseX;
 				for (std::int32_t i = 0; i < handCount; i++)
 				{
 					DominoHandEval::Tile tile = ReadHandTile(thread, seat, static_cast<std::uint32_t>(i));
@@ -1833,7 +1826,7 @@ namespace DominoCheat
 		}
 
 		// Real-font boneyard readout -- Release-facing equivalent of the
-		// raw panel's own boneyard line, same ShowBoneyardPrediction gate
+		// raw panel's own boneyard line, same ShowBoneyard gate
 		// (see DrawOverlay()). Own fixed placeholder position (Config's
 		// BoneyardX/Y) rather than stacking below the opponent-hand list
 		// -- that list's rows now scatter to per-seat calibrated
@@ -2091,7 +2084,7 @@ namespace DominoCheat
 					}
 				}
 
-				if (cfg.ShowBoneyardPrediction)
+				if (cfg.ShowBoneyard)
 				{
 					std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
 					std::int32_t remaining = static_cast<std::int32_t>(kTileSetSize) - deckCursor;
@@ -2129,7 +2122,7 @@ namespace DominoCheat
 			{
 				DrawOpponentHandStatus(thread, mySeat);
 
-				if (cfg.ShowBoneyardPrediction)
+				if (cfg.ShowBoneyard)
 					DrawBoneyardStatus(thread);
 			}
 

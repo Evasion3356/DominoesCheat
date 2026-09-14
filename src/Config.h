@@ -48,10 +48,12 @@ namespace Config
 		bool ShowOpponentHands = true;
 
 		// Reveal the undrawn boneyard tiles remaining after the deal, in
-		// draw order -- only meaningful when fewer than 4 seats are
-		// occupied (a full 4-player game consumes the entire 28-tile set
-		// at deal time, see DominoCheat.cpp's file header comment).
-		bool ShowBoneyardPrediction = true;
+		// their fixed draw order -- only meaningful when fewer than 4
+		// seats are occupied (a full 4-player game consumes the entire
+		// 28-tile set at deal time, see DominoCheat.cpp's file header
+		// comment). These are read directly from the shuffled game deck,
+		// not predicted from incomplete information.
+		bool ShowBoneyard = true;
 
 		// Standalone move-advice readout (DrawMoveAdviceStatus()/
 		// DrawMoveSafetyStatus(), the centered "Best Move"/"Winning
@@ -109,7 +111,7 @@ namespace Config
 		// convention as Poker/BlackjackCheat's own Release HUD constants.
 		// Current dominoes_sp defaults are user-tuned via Reload Config;
 		// keep the Release constexpr values in DominoCheat.cpp in sync.
-		float OpponentHandBaseX = 0.15f;
+		float OpponentHandBaseX = 0.17f;
 		float OpponentHandBaseY = 0.86f;
 		float OpponentHandStepY = -0.0915f;
 
@@ -119,14 +121,12 @@ namespace Config
 		// (CONFIRMED to exist -- see BuildDominoTileTextureName()'s own
 		// header comment for the decompile + asset-manifest evidence
 		// trail), replacing the plain FormatTile() text this row used to
-		// draw. LabelOffsetX is how far right of the "Seat N" text label
-		// the icon strip starts. CONFIRMED LIVE (2026-09-13, user-tuned
-		// via Reload Config against a real table) -- Width/Height in
+		// draw. CONFIRMED LIVE (2026-09-13, user-tuned via Reload Config
+		// against a real table) -- Width/Height in
 		// particular are notably smaller/more square than PokerCheat's
 		// own portrait-card sizing this started from, confirming a
 		// domino tile face really is a different shape than a playing
 		// card (see this session's own header-comment note).
-		float OpponentTileIconLabelOffsetX = 0.035f;
 		float OpponentTileIconSpacingX = 0.015f;
 		float OpponentTileIconWidth = 0.015f;
 		float OpponentTileIconHeight = 0.045f;
