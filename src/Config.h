@@ -107,17 +107,10 @@ namespace Config
 		// this replaced the original absolute-seat-index stack). Release
 		// bakes in the same starting numbers as constexpr, same
 		// convention as Poker/BlackjackCheat's own Release HUD constants.
-		// PLACEHOLDER, NOT calibrated against dominoes_sp's own table/
-		// camera at all -- copied from PokerCheat's OWN pre-calibration
-		// starting numbers as a reasonable starting point, not this
-		// mod's own derived values; retune live via Reload Config once a
-		// real session shows where dominoes_sp's opponent seats actually
-		// sit on screen (this mod has never run a
-		// DrawCalibrationGrid()-style pass the way PokerCheat's were
-		// derived, and a 4-seat table's layout may not even resemble
-		// poker's 6-seat one).
-		float OpponentHandBaseX = 0.18f;
-		float OpponentHandBaseY = 0.83f;
+		// Current dominoes_sp defaults are user-tuned via Reload Config;
+		// keep the Release constexpr values in DominoCheat.cpp in sync.
+		float OpponentHandBaseX = 0.15f;
+		float OpponentHandBaseY = 0.86f;
 		float OpponentHandStepY = -0.0915f;
 
 		// Real 2D tile-icon sizing/spacing (DrawOpponentHandStatus(),
@@ -182,12 +175,10 @@ namespace Config
 		float BoneyardTileIconHeight = 0.045f;
 
 		// Standalone move-advice readout position (DrawMoveAdviceStatus()/
-		// DrawMoveSafetyStatus()) -- same "rough screen-center starting
-		// point, not calibrated against anything" caveat as PokerCheat's
-		// own WinPredictionX/Y / BlackjackCheat's AdviceX/Y, whose exact
-		// values (0.48/0.5) this reuses as a starting point for
-		// consistency across the mod family.
-		float MoveAdviceX = 0.48f;
+		// DrawMoveSafetyStatus()) -- current dominoes_sp defaults are
+		// user-tuned via Reload Config; keep the Release constexpr values
+		// in DominoCheat.cpp in sync.
+		float MoveAdviceX = 0.4f;
 		float MoveAdviceY = 0.5f;
 #endif
 	};

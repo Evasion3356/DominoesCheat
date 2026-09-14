@@ -433,10 +433,9 @@
 	     comment for the full mechanism and for why this is NOT
 	     independently confirmed to rotate the same way for dominoes_sp's
 	     4-seat table. Screen position (Config's OpponentHandBaseX/Y/
-	     StepY) is copied from PokerCheat's own PRE-calibration starting
-	     numbers, not this mod's own derived values -- this mod has never
-	     run a DrawCalibrationGrid()-style pass the way PokerCheat's
-	     final numbers were reached. Revised AGAIN the same day, per a
+	     StepY) now uses the current dominoes_sp user-tuned defaults,
+	     mirrored by the Release constexpr values. Revised AGAIN the same
+	     day, per a
 	     further user request/finding: the per-tile TEXT (FormatTile()'s
 	     "[low|high]") is now real 2D tile-face icons instead, via
 	     GRAPHICS::DRAW_SPRITE against the game's own "dominos_set_N"
@@ -1727,8 +1726,8 @@ namespace DominoCheat
 		}
 
 #ifndef _DEBUG
-		constexpr float kReleaseOpponentHandBaseX = 0.18f;
-		constexpr float kReleaseOpponentHandBaseY = 0.83f;
+		constexpr float kReleaseOpponentHandBaseX = 0.15f;
+		constexpr float kReleaseOpponentHandBaseY = 0.86f;
 		constexpr float kReleaseOpponentHandStepY = -0.0915f;
 		constexpr float kReleaseOpponentTileIconLabelOffsetX = 0.035f; // CONFIRMED LIVE 2026-09-13, see Config::Values::OpponentTileIconLabelOffsetX's own comment
 		constexpr float kReleaseOpponentTileIconSpacingX = 0.015f; // CONFIRMED LIVE 2026-09-13, see Config::Values::OpponentTileIconSpacingX's own comment
@@ -1765,19 +1764,9 @@ namespace DominoCheat
 		// streams in within a frame or two of the table loading, so a
 		// tick or two of nothing here isn't worth a second code path).
 		//
-		// Screen position AND icon size/spacing: copied from PokerCheat's
-		// OWN pre-calibration starting numbers as a reasonable jumping-
-		// off point, NOT calibrated against dominoes_sp's own table/
-		// camera OR the real "DOMINO_a_b" sprite's own aspect ratio at
-		// all -- this mod has never run a DrawCalibrationGrid()-style
-		// pass, a 4-seat table's layout may not even resemble poker's
-		// 6-seat one, and a domino tile face is a different shape than a
-		// playing card (poker's own 0.02x0.045 width/height was tuned
-		// for a portrait-oriented card, not necessarily right for
-		// whatever aspect dominos_set_N's own tile sprites actually are).
-		// Debug builds retune live via Config's OpponentHandBaseX/Y/StepY
-		// + OpponentTileIcon*/Reload Config; Release bakes in the same
-		// placeholder numbers until a live session says otherwise.
+		// Screen position and icon size/spacing are the current
+		// dominoes_sp user-tuned defaults from Config. Debug builds can
+		// retune live via Reload Config; Release bakes in the same values.
 		void DrawOpponentHandStatus(rage::scrThread* thread, std::int32_t mySeat)
 		{
 			const Config::Values& cfg = Config::Get();
@@ -1910,7 +1899,7 @@ namespace DominoCheat
 		}
 
 #ifndef _DEBUG
-		constexpr float kReleaseMoveAdviceX = 0.48f;
+		constexpr float kReleaseMoveAdviceX = 0.4f;
 		constexpr float kReleaseMoveAdviceY = 0.5f;
 		constexpr float kReleaseMoveSafetyYOffset = 0.045f;
 #endif
@@ -1918,13 +1907,9 @@ namespace DominoCheat
 		// Standalone move-advice headline -- articulates
 		// DetermineBestMove()'s recommendation as a real-font, centered-
 		// ish readout instead of one line buried in the raw Debug panel.
-		// Same screen-center placeholder slot Poker's
-		// DrawWinPredictionStatus()/Blackjack's DrawAdviceStatus() start
-		// from (their own comments call this "a rough screen-center
-		// starting point... not calibrated against anything" -- same
-		// honesty applies here, doubly so since this mod has never run a
-		// calibration pass at all). Shown in both Debug and Release,
-		// gated by DrawOverlay() on it actually being mySeat's turn.
+		// Uses the current dominoes_sp user-tuned HUD position. Shown in
+		// both Debug and Release, gated by DrawOverlay() on it actually
+		// being mySeat's turn.
 		void DrawMoveAdviceStatus(const MoveRecommendation& rec)
 		{
 			const Config::Values& cfg = Config::Get();
