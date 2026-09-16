@@ -13,7 +13,7 @@
 // purely by include order; this mirrors it.
 #include "AsyncMoveAdvisor.h"
 
-#include "..\..\ScriptHookSDK\inc\main.h"
+#include "..\external\ScriptHookSDK\inc\main.h"
 #include "script.h"
 #include "keyboard.h"
 #include "Config.h"

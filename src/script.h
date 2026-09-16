@@ -3,14 +3,14 @@
 // Matches the ScriptHookRDR2 SDK sample convention, same as PokerCheat/
 // BlackjackCheat's own script.h: the common header that pulls in the
 // native/type/enum declarations plus the script registration macros.
-#include "..\..\ScriptHookSDK\inc\natives.h"
-#include "..\..\ScriptHookSDK\inc\types.h"
-#include "..\..\ScriptHookSDK\inc\enums.h"
-#include "..\..\ScriptHookSDK\inc\main.h"
-
-// Natives missing from (or untyped in) the stock 2019 SDK header go here --
-// see ExtraNatives.h. Must come after natives.h (needs invoke<>) and types.h
-// (needs Any/Hash/Ped/BOOL).
-#include "ExtraNatives.h"
+//
+// natives.h here is the canonical allocatr/alloc8or.re-generated header
+// (submodule external/ScriptHookSDK, not the stock 2019 SDK dump) --
+// project-specific natives missing from it get added to that header
+// directly rather than a per-project ExtraNatives.h.
+#include "..\external\ScriptHookSDK\inc\natives.h"
+#include "..\external\ScriptHookSDK\inc\types.h"
+#include "..\external\ScriptHookSDK\inc\enums.h"
+#include "..\external\ScriptHookSDK\inc\main.h"
 
 void ScriptMain();
