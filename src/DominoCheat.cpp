@@ -1155,6 +1155,36 @@ namespace DominoCheat
 			return TilePropLocal(thread, propSlot).At(kTilePropHandleOffset).AsInt32();
 		}
 
+		// Returns the live entity handle of ANY currently already-played
+		// (board-owned, kTilePropBoardOwnerValue) tile prop, or 0 if none
+		// exists yet (the opening move -- but the board marker is never
+		// drawn then anyway, see its own caller's rec.endPip >= 0 gate).
+		// Added 2026-09-17 to fix a live report of the board marker
+		// floating a few inches above the table: an earlier version
+		// borrowed the RECOMMENDED HAND TILE's own entity Z for height,
+		// which is the wrong CATEGORY of reference -- hand tiles very
+		// plausibly sit at a different real height than the flat board
+		// area (a rack/holder in front of the player, not the table
+		// surface itself), so even a confirmed-correct entity's Z was
+		// wrong once reused at a different physical location on the
+		// table. A board-owned prop is the same category of placement
+		// (lying flat on the table) as the spot being marked, so its real
+		// height is the right reference regardless of what the entity's
+		// own pivot convention turns out to be.
+		std::int32_t FindAnyBoardOwnedTilePropHandle(rage::scrThread* thread)
+		{
+			for (std::int32_t i = 0; i < static_cast<std::int32_t>(DominoHandEval::kTileSetSize); i++)
+			{
+				if (TilePropLocal(thread, i).At(kTilePropOwnerFieldOffset).AsInt32() == kTilePropBoardOwnerValue)
+				{
+					std::int32_t handle = GetTilePropHandle(thread, i);
+					if (handle != 0 && ENTITY::DOES_ENTITY_EXIST(handle))
+						return handle;
+				}
+			}
+			return 0;
+		}
+
 		// Exact port of dominoes_sp.ysc.c's func_934+func_843+func_935 --
 		// the chain the game's OWN ghost-preview object uses to turn a
 		// native candidate's placement descriptor (gridF1/gridF2/
@@ -2304,20 +2334,37 @@ namespace DominoCheat
 			bool projected = GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_COORD(coords.x, coords.y, coords.z, &screenX, &screenY);
 
 #ifdef _DEBUG
-			// Rate-limited to once per actual change -- see
-			// ComputeRecommendedBoardPosition()'s own comment on why (this
-			// runs every tick of the whole decision window too). Logs BOTH
-			// outcomes now, not just failure: a live report found the
-			// marker rendering, just in the wrong place, which the
-			// previous failure-only version had no way to show (success
-			// was always silent) -- screenX/screenY here is exactly what
-			// would explain a marker stuck at a fixed screen position
-			// regardless of world coords (e.g. a near-1.0 clamped Y).
-			struct LastLogged { std::string text; float wx, wy, wz; bool projected; float sx, sy; bool valid = false; };
+			// Rate-limited -- see ComputeRecommendedBoardPosition()'s own
+			// comment on why (this runs every tick of the whole decision
+			// window too). Logs BOTH outcomes now, not just failure: a
+			// live report found the marker rendering, just in the wrong
+			// place, which the previous failure-only version had no way
+			// to show (success was always silent).
+			//
+			// TWO live reports found this STILL spamming every tick, each
+			// from a different cause -- both value-equality gates, not
+			// time-based ones: first with screenX/screenY included in the
+			// gate (camera sway shifts them by a tiny fraction on
+			// essentially every frame even while looking at the exact
+			// same static world point); then, after dropping those, with
+			// the WORLD coords alone (the target entity itself isn't
+			// perfectly static tick to tick -- a live log showed its own
+			// Z drifting by ~0.0001 units a tick, presumably some subtle
+			// physics/idle sway on the prop -- so exact equality almost
+			// never held there either). No value this function has is
+			// actually stable enough for equality-based rate-limiting.
+			// Switched to a WALL-CLOCK throttle instead: log immediately
+			// on any STATE transition (text or projected success/failure
+			// changes -- these matter regardless of timing), otherwise at
+			// most once per kLogThrottle. Screen coords stay purely
+			// informational, never part of what triggers a line.
+			constexpr double kLogThrottleSeconds = 0.5;
+			struct LastLogged { std::string text; bool projected; std::chrono::steady_clock::time_point when; bool valid = false; };
 			static LastLogged last{};
-			LastLogged now{ text, coords.x, coords.y, coords.z, projected, screenX, screenY, true };
-			if (!last.valid || last.text != now.text || last.wx != now.wx || last.wy != now.wy || last.wz != now.wz ||
-				last.projected != now.projected || last.sx != now.sx || last.sy != now.sy)
+			auto now_time = std::chrono::steady_clock::now();
+			bool stateChanged = !last.valid || last.text != text || last.projected != projected;
+			bool throttleExpired = !last.valid || std::chrono::duration<double>(now_time - last.when).count() >= kLogThrottleSeconds;
+			if (stateChanged || throttleExpired)
 			{
 				if (projected)
 					Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -> screen=({:.4f},{:.4f})",
@@ -2325,7 +2372,7 @@ namespace DominoCheat
 				else
 					Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -- GET_SCREEN_COORD_FROM_WORLD_COORD failed (off-screen/behind camera/invalid position)",
 						text, coords.x, coords.y, coords.z);
-				last = now;
+				last = LastLogged{ text, projected, now_time, true };
 			}
 #endif
 			if (!projected)
@@ -3198,31 +3245,34 @@ namespace DominoCheat
 							DrawWorldMarkerOnTile(thread, propSlot, rec.isWinningMove ? Localization::WinningTileMarker() : Localization::PlayThisTileMarker());
 
 						// Mark the actual BOARD POSITION to place it on --
-						// CONFIRMED LIVE (2026-09-17) to land correctly,
 						// see ComputeRecommendedBoardPosition()'s own
-						// header comment for the X/Y formula. Its Z is NOT
-						// used here: a live log
-						// comparison the same day found Scene's own base Z
-						// sits ~0.82 units below a real tile prop's actual
-						// height (CONFIRMED via ComputeRecommendedBoardPosition()'s
-						// scene=(...) trace next to DrawWorldMarkerOnTile's
-						// own "PLAY THIS ONE!" world=(...) line for the
-						// same tick) -- Scene's coordinate is apparently a
-						// floor/anchor reference the real 3D ghost-preview
-						// OBJECT's own model geometry compensates for
-						// (mesh pivot low, mesh extends up to table
-						// height), which a flat 2D text marker never gets
-						// for free. Reusing the hand tile's own real
-						// entity Z (already resolved above, and CONFIRMED
-						// correct) sidesteps the question of what Scene's
-						// Z actually means entirely, since every tile on
-						// the table sits at the same real height.
-						if (rec.endPip >= 0 && propHandle != 0)
+						// header comment for the X/Y formula (CONFIRMED
+						// LIVE exact). Its own Z is NOT used here: see
+						// FindAnyBoardOwnedTilePropHandle()'s own header
+						// comment for why -- Scene's raw Z sits ~0.82
+						// units below a real tile's height (the game's own
+						// ghost-preview object gets away with this via its
+						// model's own low pivot, which a flat text marker
+						// doesn't), and a FIRST fix borrowing the
+						// RECOMMENDED HAND TILE's own entity Z instead
+						// (CONFIRMED WRONG live the same day -- landed a
+						// few inches above the table) turned out to be the
+						// wrong CATEGORY of reference: a hand tile very
+						// plausibly sits at a different real height than
+						// the flat board (a rack/holder, not the table
+						// surface). Using an ALREADY-PLAYED board tile's
+						// own height instead -- the SAME category of
+						// placement as the spot being marked -- is what's
+						// actually correct regardless of what either
+						// entity's own pivot convention turns out to be.
+						// NOT yet live-tested.
+						if (rec.endPip >= 0)
 						{
+							std::int32_t boardRefHandle = FindAnyBoardOwnedTilePropHandle(thread);
 							Vector3 boardPos{};
-							if (ComputeRecommendedBoardPosition(thread, static_cast<std::uint32_t>(mySeat), rec.handIndex, boardPos))
+							if (boardRefHandle != 0 && ComputeRecommendedBoardPosition(thread, static_cast<std::uint32_t>(mySeat), rec.handIndex, boardPos))
 							{
-								boardPos.z = ENTITY::GET_ENTITY_COORDS(propHandle, true, true).z;
+								boardPos.z = ENTITY::GET_ENTITY_COORDS(boardRefHandle, true, true).z;
 								DrawWorldMarkerAtPosition(boardPos, Localization::PlayHereMarker());
 							}
 						}
