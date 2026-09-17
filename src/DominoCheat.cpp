@@ -1835,6 +1835,7 @@ namespace DominoCheat
 
 #ifdef _DEBUG
 			int matches = 0;
+			int winningGridF1 = 0, winningGridF2 = 0, winningGridOrientation = 0;
 #endif
 			bool found = false;
 			for (std::uint32_t i = 0; i < count; i++)
@@ -1850,12 +1851,42 @@ namespace DominoCheat
 				{
 					outPos = ComputeCandidateWorldPosition(thread, c.gridF1, c.gridF2, c.gridOrientation);
 					found = true;
+#ifdef _DEBUG
+					winningGridF1 = c.gridF1;
+					winningGridF2 = c.gridF2;
+					winningGridOrientation = c.gridOrientation;
+#endif
 				}
 			}
 
 #ifdef _DEBUG
-			Log::Write("Trace: ComputeRecommendedBoardPosition seat={} handIndex={} nativeCandidateCount={} matchingCandidates={} found={} pos=({:.4f},{:.4f},{:.4f})",
-				mySeatU, handIndex, count, matches, found, outPos.x, outPos.y, outPos.z);
+			// Rate-limited to once per actual change (not every tick this
+			// runs, which is every tick of the whole decision window --
+			// logging unconditionally here produced ~19000 near-identical
+			// lines for a single ~2-minute decision in a live report,
+			// making the log nearly useless for finding anything else).
+			// Includes the raw Scene base coord/heading this call's
+			// ComputeCandidateWorldPosition() read internally (duplicated
+			// here rather than plumbed out as an extra return value, since
+			// this is Debug-only and the read itself is cheap) so a wrong
+			// Z specifically can be traced to either the Scene read or the
+			// grid-offset math without another round trip.
+			struct LastLogged { std::uint32_t seat; std::int32_t handIndex; std::uint32_t count; int matches; bool found; float x, y, z; bool valid = false; };
+			static LastLogged last{};
+			LastLogged now{ mySeatU, handIndex, count, matches, found, outPos.x, outPos.y, outPos.z, true };
+			if (!last.valid || last.seat != now.seat || last.handIndex != now.handIndex || last.count != now.count ||
+				last.matches != now.matches || last.found != now.found || last.x != now.x || last.y != now.y || last.z != now.z)
+			{
+				ScriptLocal scene = SceneLocal(thread);
+				float sceneX = scene.At(kSceneBaseCoordFieldOffset).AsFloat();
+				float sceneY = scene.At(kSceneBaseCoordFieldOffset + 1).AsFloat();
+				float sceneZ = scene.At(kSceneBaseCoordFieldOffset + 2).AsFloat();
+				float sceneHeading = scene.At(kSceneHeadingFieldOffset).AsFloat();
+				Log::Write("Trace: ComputeRecommendedBoardPosition seat={} handIndex={} nativeCandidateCount={} matchingCandidates={} found={} winningGrid=({},{},{}) scene=({:.4f},{:.4f},{:.4f},hdg={:.4f}) pos=({:.4f},{:.4f},{:.4f})",
+					mySeatU, handIndex, count, matches, found, winningGridF1, winningGridF2, winningGridOrientation,
+					sceneX, sceneY, sceneZ, sceneHeading, outPos.x, outPos.y, outPos.z);
+				last = now;
+			}
 #endif
 			return found;
 		}
@@ -2222,14 +2253,35 @@ namespace DominoCheat
 		void DrawWorldMarkerAtPosition(const Vector3& coords, const char* text)
 		{
 			float screenX = 0.0f, screenY = 0.0f;
-			if (!GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_COORD(coords.x, coords.y, coords.z, &screenX, &screenY))
-			{
+			bool projected = GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_COORD(coords.x, coords.y, coords.z, &screenX, &screenY);
+
 #ifdef _DEBUG
-				Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -- GET_SCREEN_COORD_FROM_WORLD_COORD failed (off-screen/behind camera/invalid position)",
-					text, coords.x, coords.y, coords.z);
-#endif
-				return;
+			// Rate-limited to once per actual change -- see
+			// ComputeRecommendedBoardPosition()'s own comment on why (this
+			// runs every tick of the whole decision window too). Logs BOTH
+			// outcomes now, not just failure: a live report found the
+			// marker rendering, just in the wrong place, which the
+			// previous failure-only version had no way to show (success
+			// was always silent) -- screenX/screenY here is exactly what
+			// would explain a marker stuck at a fixed screen position
+			// regardless of world coords (e.g. a near-1.0 clamped Y).
+			struct LastLogged { std::string text; float wx, wy, wz; bool projected; float sx, sy; bool valid = false; };
+			static LastLogged last{};
+			LastLogged now{ text, coords.x, coords.y, coords.z, projected, screenX, screenY, true };
+			if (!last.valid || last.text != now.text || last.wx != now.wx || last.wy != now.wy || last.wz != now.wz ||
+				last.projected != now.projected || last.sx != now.sx || last.sy != now.sy)
+			{
+				if (projected)
+					Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -> screen=({:.4f},{:.4f})",
+						text, coords.x, coords.y, coords.z, screenX, screenY);
+				else
+					Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -- GET_SCREEN_COORD_FROM_WORLD_COORD failed (off-screen/behind camera/invalid position)",
+						text, coords.x, coords.y, coords.z);
+				last = now;
 			}
+#endif
+			if (!projected)
+				return;
 
 			const Config::Values& cfg = Config::Get();
 #ifdef _DEBUG
