@@ -1854,8 +1854,8 @@ namespace DominoCheat
 			}
 
 #ifdef _DEBUG
-			Log::Write("Trace: ComputeRecommendedBoardPosition seat={} handIndex={} nativeCandidateCount={} matchingCandidates={} found={}",
-				mySeatU, handIndex, count, matches, found);
+			Log::Write("Trace: ComputeRecommendedBoardPosition seat={} handIndex={} nativeCandidateCount={} matchingCandidates={} found={} pos=({:.4f},{:.4f},{:.4f})",
+				mySeatU, handIndex, count, matches, found, outPos.x, outPos.y, outPos.z);
 #endif
 			return found;
 		}
@@ -2223,7 +2223,13 @@ namespace DominoCheat
 		{
 			float screenX = 0.0f, screenY = 0.0f;
 			if (!GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_COORD(coords.x, coords.y, coords.z, &screenX, &screenY))
+			{
+#ifdef _DEBUG
+				Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -- GET_SCREEN_COORD_FROM_WORLD_COORD failed (off-screen/behind camera/invalid position)",
+					text, coords.x, coords.y, coords.z);
+#endif
 				return;
+			}
 
 			const Config::Values& cfg = Config::Get();
 #ifdef _DEBUG
