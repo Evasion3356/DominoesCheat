@@ -715,27 +715,55 @@
 	   way -- it drives the search-facing pip bookkeeping, not just the
 	   marker).
 
-	5. CONFIRMED LIVE (2026-09-17, same day): a live session's
-	   LogCandidatePositionCrossCheck() logs showed the formula's computed
-	   position consistently close to BoardTracker's own tracked position
-	   for the same pip. Per an explicit user request, BoardTracker (the
-	   struct, its PendingTransition/PendingPlay queues, and every helper
-	   -- GetPropForOpenPip()/ResetBoardTracker()/TakeMatchingTransition()/
-	   PushPendingTransition()/TakeMatchingPlay()/PushPendingPlay()/
-	   LogBoardTrackerMap()/UpdateBoardTracker(), plus its own per-tick
-	   call in DrawOverlay()) has been removed outright -- the deterministic
-	   formula was the whole point of building it. LogCandidatePositionCrossCheck()
-	   itself (a pure validation/logging shim over BoardTracker's now-gone
-	   ground truth) is also removed, replaced by
-	   ComputeRecommendedBoardPosition() -- the same QueryNativeCandidates()
-	   filter-by-handIndex logic, minus the logging, feeding the live
-	   "PLAY HERE!" marker directly via the new DrawWorldMarkerAtPosition()
-	   (split out of DrawWorldMarkerOnTile() so a computed Vector3 and a
-	   prop's live entity position share one draw path). Same ambiguity
-	   handling as before: more than one native candidate matching the
-	   recommended hand tile (the hasAlternateEnd scenario) still means no
-	   marker rather than a guess. Builds clean (Debug + Release), all unit
-	   tests pass.
+	5. (2026-09-17, same day): a prior session's LogCandidatePositionCrossCheck()
+	   logs showed the formula's computed position consistently close to
+	   BoardTracker's own tracked position for the same pip -- that
+	   confirms the FORMULA itself, but NOT the same thing as this marker
+	   actually rendering on screen, a distinction the write-up here
+	   originally blurred (see fix 6 below). Per an explicit user request,
+	   BoardTracker (the struct, its PendingTransition/PendingPlay queues,
+	   and every helper -- GetPropForOpenPip()/ResetBoardTracker()/
+	   TakeMatchingTransition()/PushPendingTransition()/TakeMatchingPlay()/
+	   PushPendingPlay()/LogBoardTrackerMap()/UpdateBoardTracker(), plus
+	   its own per-tick call in DrawOverlay()) has been removed outright --
+	   the deterministic formula was the whole point of building it.
+	   LogCandidatePositionCrossCheck() itself (a pure validation/logging
+	   shim over BoardTracker's now-gone ground truth) is also removed,
+	   replaced by ComputeRecommendedBoardPosition() -- the same
+	   QueryNativeCandidates() filter-by-handIndex logic, minus the
+	   logging, feeding the live "PLAY HERE!" marker directly via the new
+	   DrawWorldMarkerAtPosition() (split out of DrawWorldMarkerOnTile()
+	   so a computed Vector3 and a prop's live entity position share one
+	   draw path). Builds clean (Debug + Release), all unit tests pass.
+
+	6. Same day, live bug report: the marker from fix 5 above never
+	   appeared at all in a real game (tested in Release; the underlying
+	   code is identical in Debug -- this block sits outside every
+	   #ifdef _DEBUG in DrawOverlay(), so the build configuration was a
+	   red herring). Root cause: ComputeRecommendedBoardPosition() as
+	   written for fix 5 only drew a marker when EXACTLY ONE native
+	   candidate matched the recommended hand tile, on the untested
+	   assumption (carried over from LogCandidatePositionCrossCheck()'s
+	   own speculative comment, never actually verified against live
+	   data) that more than one match only happens in the rare
+	   hasAlternateEnd case. More likely: a real board commonly has more
+	   than one PHYSICAL open end sharing the same pip value, which
+	   QueryNativeCandidates() legitimately returns as separate candidates
+	   for the same hand tile far more often than "rare" -- silently
+	   suppressing the marker in exactly the ordinary case BoardTracker
+	   used to handle by just picking "whichever one was most recently
+	   observed" rather than refusing outright. Fixed by taking the FIRST
+	   matching candidate instead of demanding uniqueness (still a
+	   genuinely valid placement either way); the truly misleading case --
+	   the SAME tile fitting two DIFFERENT pip values -- is already called
+	   out separately via MoveRecommendation::hasAlternateEnd's own
+	   on-screen warning, so it doesn't need a second gate here. Added a
+	   Debug-only trace log of the native candidate count and match count
+	   so the next live session has real data instead of another guess.
+	   Builds clean (Debug + Release), all unit tests pass. NOT yet
+	   live-tested -- this is a plausible fix based on code inspection,
+	   not a confirmed one; the Debug log is there specifically to check
+	   it next session.
 */
 
 #include "DominoCheat.h"
@@ -1109,13 +1137,19 @@ namespace DominoCheat
 		// text marker regardless, and WorldMarkerOffsetX/Y already exist
 		// to absorb exactly this kind of small residual.
 		//
-		// CONFIRMED LIVE (2026-09-17) via a cross-check against
-		// BoardTracker's independently-tracked prop correlation, which
-		// logged close matches every time -- this now drives the live
+		// The FORMULA itself was cross-checked (2026-09-17) against
+		// BoardTracker's independently-tracked prop correlation and
+		// logged close matches every time. This now drives the live
 		// "PLAY HERE" board marker directly (see
 		// ComputeRecommendedBoardPosition() and DrawOverlay()'s own
-		// board-marker block). BoardTracker itself (the observational
-		// timing-correlation mechanism) has since been removed.
+		// board-marker block) -- BoardTracker itself (the observational
+		// timing-correlation mechanism) has since been removed. NOTE:
+		// the cross-check confirms this formula, not that the marker
+		// actually renders correctly -- a live report the same day the
+		// draw path was wired in found nothing appeared at all, a
+		// separate bug in the candidate-selection logic around this
+		// function (see ComputeRecommendedBoardPosition()'s own comment
+		// for the fix, still not itself live-confirmed).
 		Vector3 ComputeCandidateWorldPosition(rage::scrThread* thread, int gridF1, int gridF2, int gridOrientation)
 		{
 			int gx = gridF1;
@@ -1775,30 +1809,55 @@ namespace DominoCheat
 		// Computes the real, physical world position of the board slot
 		// where hand tile `handIndex` would actually land -- the direct
 		// production use of ComputeCandidateWorldPosition()'s decompile-
-		// derived formula (CONFIRMED LIVE 2026-09-17 via a cross-check
-		// against BoardTracker's own independently-tracked prop
-		// correlation, since removed -- see that function's own header
-		// comment). Filters QueryNativeCandidates() to the ones matching
-		// `handIndex`; returns false (no position) unless exactly one
-		// matches. More than one match is the hasAlternateEnd scenario --
-		// the raw candidate list alone doesn't say which grid entry
-		// belongs to which open end, so no marker beats a guessed one.
+		// derived formula. NOT yet live-confirmed as a drawn marker (see
+		// this function's own git history: an earlier version required
+		// EXACTLY ONE native candidate to match `handIndex` before
+		// drawing anything, on the untested assumption that more than one
+		// match only happens in the rare hasAlternateEnd case -- a live
+		// report of the marker never appearing at all points at that
+		// assumption being wrong: a real board very plausibly has more
+		// than one PHYSICAL open end sharing the same pip value, which
+		// QueryNativeCandidates() would legitimately return as separate
+		// candidates for the same hand tile even outside hasAlternateEnd.
+		// BoardTracker, the mechanism this replaced, tolerated exactly
+		// this ("whichever one was most recently observed", see its own
+		// former header comment) rather than refusing to draw. This now
+		// does the same: takes the FIRST matching candidate rather than
+		// demanding uniqueness -- still a genuinely valid placement for
+		// the tile either way, and the truly misleading case (the SAME
+		// tile fitting two DIFFERENT pip values) is already called out
+		// separately via MoveRecommendation::hasAlternateEnd's own
+		// on-screen warning, not this function's job to gate on.
 		bool ComputeRecommendedBoardPosition(rage::scrThread* thread, std::uint32_t mySeatU, std::int32_t handIndex, Vector3& outPos)
 		{
 			std::array<DominoAiPolicy::Candidate, kCandidateCapacity> candidates{};
 			std::uint32_t count = QueryNativeCandidates(thread, mySeatU, candidates.data(), static_cast<std::uint32_t>(candidates.size()));
 
+#ifdef _DEBUG
 			int matches = 0;
+#endif
+			bool found = false;
 			for (std::uint32_t i = 0; i < count; i++)
 			{
 				const DominoAiPolicy::Candidate& c = candidates[i];
 				if (!c.hasPlacement || c.handIndex != handIndex)
 					continue;
 
-				outPos = ComputeCandidateWorldPosition(thread, c.gridF1, c.gridF2, c.gridOrientation);
+#ifdef _DEBUG
 				matches++;
+#endif
+				if (!found)
+				{
+					outPos = ComputeCandidateWorldPosition(thread, c.gridF1, c.gridF2, c.gridOrientation);
+					found = true;
+				}
 			}
-			return matches == 1;
+
+#ifdef _DEBUG
+			Log::Write("Trace: ComputeRecommendedBoardPosition seat={} handIndex={} nativeCandidateCount={} matchingCandidates={} found={}",
+				mySeatU, handIndex, count, matches, found);
+#endif
+			return found;
 		}
 
 		// Table points target, Round.f_666.f_14[0] -- set to 100/90/60 by
@@ -3034,11 +3093,11 @@ namespace DominoCheat
 							DrawWorldMarkerOnTile(thread, propSlot, rec.isWinningMove ? Localization::WinningTileMarker() : Localization::PlayThisTileMarker());
 
 						// Mark the actual BOARD POSITION to place it on --
-						// CONFIRMED LIVE 2026-09-17, see
-						// ComputeRecommendedBoardPosition()'s own header
-						// comment. No marker (rather than a guessed one) if
-						// the native candidate list doesn't resolve to
-						// exactly one grid slot for this hand tile.
+						// see ComputeRecommendedBoardPosition()'s own header
+						// comment. NOT yet live-confirmed as a drawn marker
+						// (a live report the same day it was wired in found
+						// nothing appeared at all -- see that function's
+						// own comment for the fix and what's still open).
 						if (rec.endPip >= 0)
 						{
 							Vector3 boardPos{};
