@@ -98,6 +98,20 @@ namespace DominoAiPolicy
 		int handIndex = -1;
 		bool hasPlacement = false; // native words f_1/f_2 are not both zero (func_613)
 		int resultingEndTotal = 0; // native word f_4, NOT merely the new matching pip
+
+		// Raw native words f_1/f_2/f_3 -- CONFIRMED via decompile (2026-09-17,
+		// dominoes_sp func_843/func_934/func_935, the exact functions that
+		// place the game's OWN ghost-preview object) to be a 2D BOARD GRID
+		// COORDINATE (f_1/f_2, in 0.013125-world-unit cells relative to
+		// Scene's own base coord+heading) plus an orientation selector
+		// (f_3, tested against exactly {0,2} vs anything else) that picks
+		// which small recentering offset applies. See
+		// ComputeCandidateWorldPosition() in DominoCheat.cpp for the exact
+		// port of that formula -- this is what finally makes "where do I
+		// place it" a computed fact instead of an observed correlation.
+		int gridF1 = 0;
+		int gridF2 = 0;
+		int gridOrientation = 0;
 	};
 
 	// Returns a candidate-list index, not a hand index. Unknown rules are

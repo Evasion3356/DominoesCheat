@@ -50,6 +50,7 @@
 #include "GamePointers.h"
 
 #include <cstdint>
+#include <cstring>
 
 class ScriptLocal
 {
@@ -88,5 +89,21 @@ public:
 	{
 		void* raw = GamePointers::ReadScriptLocal(m_Thread, m_Index);
 		return static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(raw));
+	}
+
+	// Same 8-byte slot as AsInt32(), but bit-reinterpreted as IEEE-754
+	// rather than numerically converted -- for a script-local declared as
+	// `float` rather than `int` (e.g. dominoes_sp's own Scene base
+	// coordinate/heading, DominoCheat.cpp's kSceneBaseCoordFieldOffset/
+	// kSceneHeadingFieldOffset). No project in this family has needed a
+	// raw float read before this -- every prior field has been a count,
+	// index, handle, or hash.
+	float AsFloat() const
+	{
+		void* raw = GamePointers::ReadScriptLocal(m_Thread, m_Index);
+		std::uint32_t bits = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(raw));
+		float value;
+		std::memcpy(&value, &bits, sizeof(value));
+		return value;
 	}
 };

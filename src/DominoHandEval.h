@@ -43,6 +43,7 @@ namespace DominoHandEval
 		bool IsValid() const { return low >= 0 && low <= 6 && high >= low && high <= 6; }
 		bool IsDouble() const { return IsValid() && low == high; }
 		int PipTotal() const { return IsValid() ? (low + high) : 0; }
+		bool operator==(const Tile& other) const { return low == other.low && high == other.high; }
 	};
 
 	constexpr int kTileSetSize = 28; // double-six set: 7+6+5+4+3+2+1 unique {low<=high} pairs, 0-6 each

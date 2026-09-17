@@ -98,6 +98,15 @@ namespace Localization
 	// Uses Current() for the language.
 	const char* WinningMoveLabel();
 
+	// Warning appended to the move-advice line (see DrawMoveAdviceStatus())
+	// when the recommended tile ALSO legally fits a DIFFERENT open end than
+	// the one recommended -- added 2026-09-16 after a live loss traced to
+	// playing the right tile on the wrong of two matching ends, which
+	// silently threw away a proven win. The specific end numbers are drawn
+	// separately as plain digits (no localization needed there); this is
+	// just the short attention-grabbing phrase.
+	const char* AmbiguousEndWarning();
+
 	// This mod's own invented "how safely can opponents answer this"
 	// qualifier -- Safe (DetermineBestMove()'s opponentRespondCount == 0,
 	// i.e. no opponent tile can answer the resulting open end), Risky
@@ -123,6 +132,13 @@ namespace Localization
 	// short imperative/exclamation instead of a label).
 	const char* PlayThisTileMarker();
 	const char* WinningTileMarker();
+
+	// World-space text drawn over the physical BOARD POSITION to place
+	// the recommended tile on (see BoardTracker/GetPropForOpenPip() in
+	// DominoCheat.cpp) -- added 2026-09-16 alongside that tracker,
+	// specifically because PlayThisTileMarker() only ever points at the
+	// tile in your OWN hand, never at where on the table it goes.
+	const char* PlayHereMarker();
 
 	// Boneyard readout label (DrawBoneyardStatus()).
 	const char* BoneyardWord();

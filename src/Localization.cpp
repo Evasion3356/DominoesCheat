@@ -49,6 +49,28 @@ namespace
 		"获胜出牌！",                   // zh-CN
 	};
 
+	// "TWO SPOTS FIT!" -- appended to the move-advice line when the
+	// recommended tile also legally matches a different open end (see
+	// Localization.h's AmbiguousEndWarning() header comment). LLM-assisted
+	// like the other short exclamatory labels here -- fix a row directly
+	// if a wording is off for a given language.
+	const char* const kAmbiguousEndWarnings[kLanguageCount] =
+	{
+		"TWO SPOTS FIT!",             // en-US
+		"DEUX EMPLACEMENTS !",        // fr-FR
+		"ZWEI STELLEN PASSEN!",       // de-DE
+		"DUE POSTI POSSIBILI!",       // it-IT
+		"¡ENCAJA EN DOS SITIOS!",     // es-ES
+		"CABE EM DOIS LUGARES!",      // pt-BR
+		"PASUJE W DWÓCH MIEJSCACH!",  // pl-PL
+		"ПОДХОДИТ В ДВУХ МЕСТАХ!",    // ru-RU
+		"두 곳에 맞습니다!",              // ko-KR
+		"兩處都能放！",                  // zh-TW
+		"二か所に置けます！",              // ja-JP
+		"¡ENCAJA EN DOS SITIOS!",     // es-MX
+		"两处都能放！",                  // zh-CN
+	};
+
 	// SAFE / RISKY / VERY RISKY -- this mod's own invented blocking-safety
 	// qualifier (see Localization.h's ClassifyBlockingSafety() header
 	// comment), same category as BlackjackCheat's BET LOW/MEDIUM/HIGH
@@ -106,6 +128,27 @@ namespace
 		"勝利の一手！",                 // ja-JP
 		"¡JUGADA GANADORA!",          // es-MX
 		"获胜出牌！",                   // zh-CN
+	};
+
+	// "PLAY HERE!" -- world-space text drawn over the physical BOARD
+	// POSITION to place the recommended tile on (see BoardTracker in
+	// DominoCheat.cpp), distinct from kPlayThisTileMarkers above (which
+	// marks the tile in your hand, not where it goes on the table).
+	const char* const kPlayHereMarkers[kLanguageCount] =
+	{
+		"PLAY HERE!",                 // en-US
+		"JOUEZ ICI !",                // fr-FR
+		"HIER SPIELEN!",              // de-DE
+		"GIOCA QUI!",                 // it-IT
+		"¡JUEGA AQUÍ!",               // es-ES
+		"JOGUE AQUI!",                // pt-BR
+		"ZAGRAJ TUTAJ!",              // pl-PL
+		"СЫГРАЙ ЗДЕСЬ!",              // ru-RU
+		"여기 내세요!",                  // ko-KR
+		"打在這裡！",                    // zh-TW
+		"ここに出せ！",                  // ja-JP
+		"¡JUEGA AQUÍ!",               // es-MX
+		"打在这里！",                    // zh-CN
 	};
 
 	// "Boneyard" -- DrawBoneyardStatus()'s own label.
@@ -196,6 +239,7 @@ namespace Localization
 
 	const char* BestMoveLabel() { return kBestMoveLabels[static_cast<int>(Current())]; }
 	const char* WinningMoveLabel() { return kWinningMoveLabels[static_cast<int>(Current())]; }
+	const char* AmbiguousEndWarning() { return kAmbiguousEndWarnings[static_cast<int>(Current())]; }
 
 	BlockingSafety ClassifyBlockingSafety(std::int32_t opponentRespondCount)
 	{
@@ -213,6 +257,7 @@ namespace Localization
 
 	const char* PlayThisTileMarker() { return kPlayThisTileMarkers[static_cast<int>(Current())]; }
 	const char* WinningTileMarker() { return kWinningTileMarkers[static_cast<int>(Current())]; }
+	const char* PlayHereMarker() { return kPlayHereMarkers[static_cast<int>(Current())]; }
 
 	const char* BoneyardWord() { return kBoneyardWords[static_cast<int>(Current())]; }
 
