@@ -29,7 +29,18 @@ all. NOT yet live-tested. Two more same-evening changes ARE live-tested
 and confirmed (Session 10 below): the boneyard row now draws real tile
 icons instead of text, and a new `ProbeDominoSkin()` diagnostic
 confirmed `Scene.f_6` really is the table's `dominos_set_N` skin
-index.**
+index. A later pass (2026-09-17, see `DominoCheat.cpp`'s own header
+comment's "Session 12" entries for the full detail) replaced the
+observational `BoardTracker` mechanism for the "PLAY HERE!" world-space
+board marker with a deterministic formula ported from the game's own
+ghost-preview code, then found and fixed two live bugs in it: an overly
+strict candidate-match filter that suppressed the marker entirely, and a
+Z-height bug where the underlying Scene coordinate turned out to be a
+floor/anchor reference rather than table height (fixed by reusing a real
+tile entity's own height instead). CONFIRMED LIVE now -- both
+"PLAY THIS ONE!" and "PLAY HERE!" land correctly on the physical table.
+The same pass also removed six F12 diagnostics that had been disabled
+since Session 8 for menu space and were no longer needed.**
 `src/DominoCheat.cpp`'s file header comment documents every struct
 offset this mod reads, each with its own confidence rating. Sessions so
 far:
@@ -714,14 +725,16 @@ CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
    direction has only been checked from ONE seat -- worth a second data
    point from a different raw seat to confirm it truly rotates relative
    to you (PokerCheat's own confirmation) rather than coincidentally
-   lining up from the one seat tried so far. (c) `WorldMarkerOffsetX/Y/
-   FontSize` (just added to `Config`, still the original placeholder
-   -0.06f/0/26 values) -- a live report found "PLAY THIS ONE"/"WINNING
-   MOVE" sitting over the tile's LEFT side instead of centered; retune
-   via F12 -> Reload Config until it visually centers (there's no
-   SET_TEXT_CENTRE equivalent on the $Font5/UIDEBUG pipeline -- see
-   `DrawWorldMarkerOnTile()`'s own comment -- so this is eyeball-tuned
-   the same way the icon strip was, not computed).
+   lining up from the one seat tried so far. (c) DONE: `WorldMarkerOffsetX/Y/
+   FontSize` were already confirmed centering "PLAY THIS ONE!"/"WINNING
+   MOVE" correctly (Session 8, `WorldMarkerOffsetX=-0.03`). A separate,
+   later bug in the newer "PLAY HERE!" board marker (added Session 12)
+   was found and fixed 2026-09-17 -- not an offset-tuning issue at all,
+   but Scene's own base coordinate sitting ~0.82 units below real table
+   height; fixed by reusing a real tile entity's own Z instead of
+   trusting Scene's. Both world-space markers are now CONFIRMED LIVE
+   correct -- see `DominoCheat.cpp`'s header comment's "Session 12"
+   entries for the full story.
 
 Expect more corrections on anything still marked untraced -- four fixes
 so far (`kSeatStride`, the boneyard header word, the ped-array header
