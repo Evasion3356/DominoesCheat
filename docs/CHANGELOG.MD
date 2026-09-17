@@ -1,5 +1,38 @@
 # DominoCheat Changelog
 
+## [1.1.0] - 2026-09-17
+
+### Added
+
+- Real 3D "PLAY HERE!" world-space marker showing exactly where the
+  recommended tile should be placed on the physical board, replacing the
+  earlier prop-tracking approach with a deterministic formula ported from
+  the game's own ghost-preview code.
+- On-screen/log warning when the recommended tile legally fits more than
+  one open end, so an ambiguous placement doesn't read as a single
+  obvious spot.
+- A post-move check that flags when the tile was actually played to a
+  different end than recommended, even when the tile itself matched.
+
+### Fixed
+
+- Opponent move-prediction timing: predictions are now captured before an
+  opponent's move commits instead of a tick where it had already
+  committed.
+- "PLAY HERE!" marker no longer fails to appear on boards where the same
+  pip value has more than one open end.
+- "PLAY HERE!" marker no longer floats above or sits below the physical
+  table; it now uses a real board tile's own height instead of an
+  unreliable base coordinate.
+- Debug marker trace logging no longer spams the log; it is off by
+  default and wall-clock throttled when enabled.
+
+### Removed
+
+- The observational board-tracking mechanism and six disabled diagnostic
+  menu items, both superseded by the deterministic board marker and no
+  longer needed.
+
 ## [1.0.0] - 2026-09-13
 
 Initial release of DominoCheat, a ScriptHookRDR2 ASI mod that exposes
