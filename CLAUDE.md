@@ -40,7 +40,16 @@ floor/anchor reference rather than table height (fixed by reusing a real
 tile entity's own height instead). CONFIRMED LIVE now -- both
 "PLAY THIS ONE!" and "PLAY HERE!" land correctly on the physical table.
 The same pass also removed six F12 diagnostics that had been disabled
-since Session 8 for menu space and were no longer needed.**
+since Session 8 for menu space and were no longer needed. The same day
+(item 11 in the numbered Session list below), a full 1v1 game against
+the scripted NPC opponent --
+heavy on boneyard draws on both sides -- gave Session 11's boneyard-draw-
+aware deep search its first live test: CONFIRMED LIVE. The search ran
+every single decision (no fallback-heuristic label ever appeared in the
+log), reported search depths in the 20s consistent with
+`DrawUntilPlayable()` correctly collapsing forced-draw plies for both
+seats, every recommended move matched what was actually played, and the
+round was won.**
 `src/DominoCheat.cpp`'s file header comment documents every struct
 offset this mod reads, each with its own confidence rating. Sessions so
 far:
@@ -317,6 +326,25 @@ far:
     the static trace didn't find). `kSceneDominoSkinFieldOffset` and
     `ProbeDominoSkin()`'s own header comments in `DominoCheat.cpp`/`.h`
     are both updated to CONFIRMED LIVE.
+11. Same day (2026-09-17), the first live test against a full 1v1 game
+    (you vs. the scripted NPC opponent, seat 1) with a heavily-drawn
+    boneyard -- both seats repeatedly ran out of legal moves and had to
+    draw multiple tiles mid-turn. This was specifically Session 11's
+    boneyard-draw modeling's first live exercise (previously "modeled,
+    NOT yet live-tested" per that section). CONFIRMED LIVE: the deep
+    search (`DominoSearch.h`'s `DrawUntilPlayable()`) ran on every single
+    decision the entire game -- no fallback-heuristic label ever appeared
+    in `DominoCheat.log` -- and the advice readout's reported search
+    depth climbed into the 20s (`@depth 24` down to `@depth 12` as tiles
+    were consumed), only explainable by the tree correctly collapsing
+    through the known, forced draw sequence for BOTH seats, not just
+    mySeat's. Every recommended move matched what was actually played
+    (`prediction MATCH`, every turn, no exceptions), and the round ended
+    in a win (`WINNING MOVE [6|6]`, hand emptied). Still open from this
+    pass: the points-target/score reads and the scoring-mode (All Fives/
+    Threes) opponent model were NOT exercised (this table was Draw
+    rules) -- see "Decision engine (Session 11)" and "Next concrete
+    step" below.
 
 Read `DominoCheat.cpp`'s header comment before touching any offset -- it
 lays out the full derivation/citation trail (exact line numbers in the
@@ -559,8 +587,14 @@ scripted opponent policy collapses the tree, the search solves most
 positions from the first move -- so every move in a solved-lost
 position scored identically and the choice fell through to the
 highest-pip tiebreak, i.e. the original 1-ply heuristic in disguise.
-Rewritten (all unit-tested against an exhaustive oracle, NOT yet
-live-tested):
+Rewritten (all unit-tested against an exhaustive oracle). The boneyard-
+draw modeling below and the deep search's general operation under it
+were live-tested 2026-09-17 in a 1v1 Draw-rules game with heavy boneyard
+consumption -- CONFIRMED LIVE (see the numbered Session list's item 11
+above). The net-points evaluation's game-outcome awareness (points
+target/score), the root scoring bonus, and the scoring-mode (All Fives/
+Threes) opponent model were not exercised by that table and remain
+untested:
 
 - **Net-points evaluation** in the game's own payout, traced from
   `func_169`/`func_343`/`func_357`: the seat that dominoes (or, on a
@@ -636,10 +670,14 @@ between requests; it does not speculate during opponents' turns. Search
 also cooperatively cancels during worker teardown. All game-memory reads
 remain on ScriptMain; only immutable snapshots cross to the worker.
 
-The existing distinct-open-pip board approximation, unmodeled draws, and
-scoring-variant limitations remain unchanged. Runtime presets and worker
-lifecycle have standalone regression coverage; live game testing is still
-needed. Older session notes describe the superseded node-capped worker.
+The existing distinct-open-pip board approximation and scoring-variant
+limitations remain unchanged (boneyard draws themselves ARE modeled --
+see Session 11 above -- and that modeling is now live-confirmed,
+2026-09-17, 1v1 Draw rules, heavy boneyard use). Runtime presets and
+worker lifecycle have standalone regression coverage; broader live game
+testing (other seat counts, All Fives/Threes rules, the points-target/
+score reads) is still needed. Older session notes describe the
+superseded node-capped worker.
 
 ## External resources
 
@@ -683,23 +721,27 @@ needed. Older session notes describe the superseded node-capped worker.
 Both "Probe Legal Moves" and the "Turn: seat N" overlay line are now
 CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
 
-1. **Live-test Session 9's minimax** (`DominoSearch.h` +
-   `DetermineBestMove()`'s rewrite) against a real full 4-seat,
+1. **Live-test Session 9/11's search** against a real full 4-seat,
    boneyard-empty game via `F12 -> Probe Best Move` -- confirm it still
    only recommends legal moves, and ideally track win rate against the
    old 1-ply heuristic's own baseline. Also worth watching real
-   frame-time on the decision tick to see if the 8-ply default search
-   depth needs tuning down (or can go deeper -- see `DominoSearch.h`'s
-   own comment on why endgame hand sizes make deeper search cheap
-   exactly when it matters most).
+   frame-time on the decision tick. (The 2-seat, boneyard-heavy,
+   Draw-rules case is now CONFIRMED LIVE -- 2026-09-17, see the numbered
+   Session list's item 11 and "Decision engine (Session 11)" above. The
+   4-seat, boneyard-empty case and any All Fives/Threes table are still
+   untested.)
 2. **Watch a hand grow past 7 tiles** (draw from the boneyard because no
    hand tile was playable) and confirm `ProbeSeatHands()`'s widened
    (up to 19) tile dump shows the real extra tile(s) rather than garbage.
 3. **Trace kSeatActiveFlagOffset's real meaning** (reads 100 when
    occupied, 0 when empty) -- low priority, not blocking anything.
 4. DONE (Session 11): boneyard draws are modeled and the 1-ply
-   fallback is gone. Still open from that pass: live-confirm the
-   points-target/score reads (`ProbeBestMove` logs them) and, the
+   fallback is gone. LIVE-CONFIRMED 2026-09-17 (item 11 above, 1v1 Draw
+   rules, heavy boneyard use): the search runs every decision without
+   falling back, correctly collapses forced-draw plies for both seats,
+   and its recommendations held up for a full won round. Still open from
+   that pass: live-confirm the points-target/score reads (`ProbeBestMove`
+   logs them) and, the
    biggest remaining lever, the scoring-mode opponent model -- the AI
    prefers a scoring placement when one exists, which needs the
    board's real end total; `LogOpponentPredictions` already logs each

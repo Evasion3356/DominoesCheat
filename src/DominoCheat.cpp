@@ -2322,6 +2322,14 @@ namespace DominoCheat
 		constexpr int kReleaseWorldMarkerFontSize = 26;
 #endif
 
+		// Off by default -- see this function's own trace block below for
+		// why (2026-09-17: even a 0.5s wall-clock throttle still read as
+		// "spamming" over a long decision window). Flip to true and
+		// rebuild Debug to bring the trace back for a specific
+		// debugging session; the throttle logic itself is untouched and
+		// still applies once this is on.
+		constexpr bool kLogWorldMarkerTrace = false;
+
 		// Draws `text` at the given real world position, projected to
 		// screen -- the exact same GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_
 		// COORD technique PokerCheat's own community-card objects use.
@@ -2334,45 +2342,54 @@ namespace DominoCheat
 			bool projected = GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_COORD(coords.x, coords.y, coords.z, &screenX, &screenY);
 
 #ifdef _DEBUG
-			// Rate-limited -- see ComputeRecommendedBoardPosition()'s own
-			// comment on why (this runs every tick of the whole decision
-			// window too). Logs BOTH outcomes now, not just failure: a
-			// live report found the marker rendering, just in the wrong
-			// place, which the previous failure-only version had no way
-			// to show (success was always silent).
-			//
-			// TWO live reports found this STILL spamming every tick, each
-			// from a different cause -- both value-equality gates, not
-			// time-based ones: first with screenX/screenY included in the
-			// gate (camera sway shifts them by a tiny fraction on
-			// essentially every frame even while looking at the exact
-			// same static world point); then, after dropping those, with
-			// the WORLD coords alone (the target entity itself isn't
-			// perfectly static tick to tick -- a live log showed its own
-			// Z drifting by ~0.0001 units a tick, presumably some subtle
-			// physics/idle sway on the prop -- so exact equality almost
-			// never held there either). No value this function has is
-			// actually stable enough for equality-based rate-limiting.
-			// Switched to a WALL-CLOCK throttle instead: log immediately
-			// on any STATE transition (text or projected success/failure
-			// changes -- these matter regardless of timing), otherwise at
-			// most once per kLogThrottle. Screen coords stay purely
-			// informational, never part of what triggers a line.
-			constexpr double kLogThrottleSeconds = 0.5;
-			struct LastLogged { std::string text; bool projected; std::chrono::steady_clock::time_point when; bool valid = false; };
-			static LastLogged last{};
-			auto now_time = std::chrono::steady_clock::now();
-			bool stateChanged = !last.valid || last.text != text || last.projected != projected;
-			bool throttleExpired = !last.valid || std::chrono::duration<double>(now_time - last.when).count() >= kLogThrottleSeconds;
-			if (stateChanged || throttleExpired)
+			if (kLogWorldMarkerTrace)
 			{
-				if (projected)
-					Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -> screen=({:.4f},{:.4f})",
-						text, coords.x, coords.y, coords.z, screenX, screenY);
-				else
-					Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -- GET_SCREEN_COORD_FROM_WORLD_COORD failed (off-screen/behind camera/invalid position)",
-						text, coords.x, coords.y, coords.z);
-				last = LastLogged{ text, projected, now_time, true };
+				// Rate-limited -- see ComputeRecommendedBoardPosition()'s
+				// own comment on why (this runs every tick of the whole
+				// decision window too). Logs BOTH outcomes, not just
+				// failure: a live report found the marker rendering, just
+				// in the wrong place, which a failure-only version had no
+				// way to show (success was always silent).
+				//
+				// TWO live reports found this STILL spamming every tick,
+				// each from a different cause -- both value-equality
+				// gates, not time-based ones: first with screenX/screenY
+				// included in the gate (camera sway shifts them by a tiny
+				// fraction on essentially every frame even while looking
+				// at the exact same static world point); then, after
+				// dropping those, with the WORLD coords alone (the target
+				// entity itself isn't perfectly static tick to tick -- a
+				// live log showed its own Z drifting by ~0.0001 units a
+				// tick, presumably some subtle physics/idle sway on the
+				// prop -- so exact equality almost never held there
+				// either). Switched to a WALL-CLOCK throttle instead: log
+				// immediately on any STATE transition (text or projected
+				// success/failure changes), otherwise at most once per
+				// kLogThrottleSeconds. A THIRD live report found even
+				// this "still spamming" over a long decision window
+				// (0.5s x a multi-minute window is still a lot of lines
+				// to scroll past when hunting for something else in the
+				// log) -- rather than stretch the throttle further, this
+				// whole trace is now off by default (kLogWorldMarkerTrace
+				// above), same "off unless actively needed" precedent
+				// LogOpponentCandidateProbe()'s own verboseLog parameter
+				// already set for DetermineOpenEnds().
+				constexpr double kLogThrottleSeconds = 0.5;
+				struct LastLogged { std::string text; bool projected; std::chrono::steady_clock::time_point when; bool valid = false; };
+				static LastLogged last{};
+				auto now_time = std::chrono::steady_clock::now();
+				bool stateChanged = !last.valid || last.text != text || last.projected != projected;
+				bool throttleExpired = !last.valid || std::chrono::duration<double>(now_time - last.when).count() >= kLogThrottleSeconds;
+				if (stateChanged || throttleExpired)
+				{
+					if (projected)
+						Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -> screen=({:.4f},{:.4f})",
+							text, coords.x, coords.y, coords.z, screenX, screenY);
+					else
+						Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -- GET_SCREEN_COORD_FROM_WORLD_COORD failed (off-screen/behind camera/invalid position)",
+							text, coords.x, coords.y, coords.z);
+					last = LastLogged{ text, projected, now_time, true };
+				}
 			}
 #endif
 			if (!projected)
