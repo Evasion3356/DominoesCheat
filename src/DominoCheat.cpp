@@ -714,6 +714,28 @@
 	   OpenEnds ground-truth-resync logic from fix 3 above stays either
 	   way -- it drives the search-facing pip bookkeeping, not just the
 	   marker).
+
+	5. CONFIRMED LIVE (2026-09-17, same day): a live session's
+	   LogCandidatePositionCrossCheck() logs showed the formula's computed
+	   position consistently close to BoardTracker's own tracked position
+	   for the same pip. Per an explicit user request, BoardTracker (the
+	   struct, its PendingTransition/PendingPlay queues, and every helper
+	   -- GetPropForOpenPip()/ResetBoardTracker()/TakeMatchingTransition()/
+	   PushPendingTransition()/TakeMatchingPlay()/PushPendingPlay()/
+	   LogBoardTrackerMap()/UpdateBoardTracker(), plus its own per-tick
+	   call in DrawOverlay()) has been removed outright -- the deterministic
+	   formula was the whole point of building it. LogCandidatePositionCrossCheck()
+	   itself (a pure validation/logging shim over BoardTracker's now-gone
+	   ground truth) is also removed, replaced by
+	   ComputeRecommendedBoardPosition() -- the same QueryNativeCandidates()
+	   filter-by-handIndex logic, minus the logging, feeding the live
+	   "PLAY HERE!" marker directly via the new DrawWorldMarkerAtPosition()
+	   (split out of DrawWorldMarkerOnTile() so a computed Vector3 and a
+	   prop's live entity position share one draw path). Same ambiguity
+	   handling as before: more than one native candidate matching the
+	   recommended hand tile (the hasAlternateEnd scenario) still means no
+	   marker rather than a guess. Builds clean (Debug + Release), all unit
+	   tests pass.
 */
 
 #include "DominoCheat.h"
@@ -735,7 +757,6 @@
 #include <cstring>
 #include <vector>
 #include <chrono>
-#include <cmath>
 
 namespace DominoCheat
 {
@@ -1035,10 +1056,12 @@ namespace DominoCheat
 	// instead) feeds the identical `*Scene`/`Scene.f_3` pair into that
 	// native's own coord/heading parameters. Bare scalar fields, no
 	// bracket-indexing/header-word question the way every ARRAY field in
-	// this file has needed. NOT yet live-confirmed by a probe (the
-	// formula this feeds, ComputeCandidateWorldPosition() below, has its
-	// own live cross-check against BoardTracker's already-confirmed
-	// correlation instead -- see that function's own comment).
+	// this file has needed. CONFIRMED LIVE (2026-09-17, see this file's
+	// header comment's "Session 12" entry, part 5): the formula this
+	// feeds, ComputeCandidateWorldPosition() below, was cross-checked
+	// against BoardTracker's independently-tracked prop position and
+	// matched closely every time -- BoardTracker (the observational
+	// timing-correlation mechanism) has since been removed.
 	constexpr std::uint32_t kSceneBaseCoordFieldOffset = 0; // 3 floats (x,y,z)
 	constexpr std::uint32_t kSceneHeadingFieldOffset = 3;   // 1 float
 
@@ -1086,10 +1109,13 @@ namespace DominoCheat
 		// text marker regardless, and WorldMarkerOffsetX/Y already exist
 		// to absorb exactly this kind of small residual.
 		//
-		// NOT yet independently live-confirmed by a dedicated probe --
-		// see LogCandidatePositionCrossCheck()'s own comment for how this
-		// gets validated against BoardTracker's already-confirmed prop
-		// correlation instead of requiring a brand new live test.
+		// CONFIRMED LIVE (2026-09-17) via a cross-check against
+		// BoardTracker's independently-tracked prop correlation, which
+		// logged close matches every time -- this now drives the live
+		// "PLAY HERE" board marker directly (see
+		// ComputeRecommendedBoardPosition() and DrawOverlay()'s own
+		// board-marker block). BoardTracker itself (the observational
+		// timing-correlation mechanism) has since been removed.
 		Vector3 ComputeCandidateWorldPosition(rage::scrThread* thread, int gridF1, int gridF2, int gridOrientation)
 		{
 			int gx = gridF1;
@@ -1260,10 +1286,7 @@ namespace DominoCheat
 		// tile shifts every later index down (see ReadHandTile()'s own
 		// "COMPACTING hand-array index" comment), so comparing index-by-
 		// index would misreport an unrelated shuffle-down as N tile swaps.
-		// Moved out of the old #ifdef _DEBUG block (2026-09-16) so
-		// BoardTracker (below, Release-compiled too) can share it with
-		// LogDebugTrace()'s own Debug-only hand-diff loop instead of
-		// duplicating this logic.
+		// Shared by LogDebugTrace()'s own Debug-only hand-diff loop.
 		void CountTilesByValue(const DominoHandEval::Tile* hand, std::int32_t count, std::array<int, DominoHandEval::kTileSetSize>& outCounts)
 		{
 			outCounts.fill(0);
@@ -1275,502 +1298,6 @@ namespace DominoCheat
 				if (idx >= 0 && idx < static_cast<std::int32_t>(DominoHandEval::kTileSetSize))
 					outCounts[idx]++;
 			}
-		}
-
-		// Continuously tracks which physical board-side tile-prop
-		// (Scene.f_746[i], see this section's own header comment above) is
-		// currently exposing which pip value on the real board -- added
-		// 2026-09-16 to give a second, board-side target to
-		// DrawWorldMarkerOnTile() alongside the existing hand-tile marker
-		// (FindTilePropForTileValue(), which only ever resolves a HAND
-		// tile via `.f_3`, local-player-only). This is what finally
-		// answers "where do I actually place it" rather than just naming
-		// an open-end pip NUMBER and trusting the player to find the
-		// matching physical domino by eye -- the exact gap a live loss
-		// and a live 33%-wrong-end rate both traced back to.
-		//
-		// Runs every tick, Debug AND Release both (see UpdateBoardTracker()'s
-		// own call site in DrawOverlay()) -- it has to observe every
-		// seat's plays across the whole round to keep its map current,
-		// not just during mySeat's own decision window, so it cannot live
-		// inside the existing #ifdef _DEBUG trace.
-		//
-		// MECHANISM: a pip-value -> prop-slot map, kept current two ways.
-		// Each tick, a per-seat hand diff (identity-based, via the shared
-		// CountTilesByValue() above) finds which seat just played which
-		// tile; a parallel scan of all 28 props' owner fields
-		// (kTilePropOwnerFieldOffset) finds which prop slot's owner
-		// transitions from that SAME seat's own hand marker to
-		// kTilePropBoardOwnerValue. The two events together identify both
-		// the tile and its physical prop -- CONFIRMED LIVE (2026-09-17)
-		// the transition really does land on the tile that was played,
-		// but only after a real ~1.3-2.9s placement-slide-animation
-		// delay, not the same tick the hand array shrinks. See
-		// PendingTransition/PendingPlay below for the wall-clock-time
-		// windowed matching this needed (a tick-count window was tried
-		// first and undershot badly -- this file's own header comment's
-		// "Session 12" entry, part 3, has the full story of why).
-		//
-		// WHICH PIP(S) a play exposes is resolved against GROUND TRUTH,
-		// not tracked incrementally: every detected play re-reads the
-		// real current open-end set via DetermineOpenEnds() (the same
-		// trusted path DetermineBestMove()/LogOpponentCandidateProbe()
-		// already use, zero mismatches all session) and checks which of
-		// the played tile's own two pips the fresh read still shows open
-		// -- one for a normal match (the other was consumed), one or
-		// both for an opening move or a lucky double, by construction,
-		// with no separate "ambiguous tile" branch needed. An EARLIER
-		// version instead patched its own hand-rolled open-ends set
-		// incrementally (add/remove per play, no native calls) and was
-		// confirmed live to DRIFT from the real board over a session --
-		// a stale pip lingered well after the real game had moved past
-		// it, silently breaking GetPropForOpenPip() for that value with
-		// no error logged. The ground-truth re-read costs one extra
-		// DetermineOpenEnds() call per detected play (a few times a
-		// minute, not every tick) and self-heals by construction, since
-		// it fully REPLACES what's remembered rather than patching it.
-		//
-		// NOT modeled, same documented limitation as DominoSearch.h's own
-		// OpenEnds: real board topology (a spinner double's multiple
-		// physical arms collapse to one abstract slot here). A tracked
-		// prop's world position is still a REAL, correct location for a
-		// tile actually exposing that pip value regardless -- there just
-		// might be more than one such prop, and this only remembers
-		// whichever one was most recently observed becoming that value.
-		//
-		// This logs its own work automatically (Debug only, no F12 action
-		// needed) -- every play logs a "board tracker seat N played
-		// [x|y] -> propSlot=Z" correlation line plus a resulting "open
-		// ends=[...] propForPip=[...]" map line (see the Log::Write calls
-		// inside UpdateBoardTracker() and LogBoardTrackerMap() below),
-		// kept as a standing diagnostic rather than removed now that it
-		// works, matching every other confirmed mechanism in this file.
-
-		// Forward declaration -- real definition is further down (needs
-		// MINIGAME::_FIND_PLAYABLE_HAND_TILES's own kCandidateCapacity/
-		// kCandidateStride constants, declared later still). BoardTracker
-		// needs it for the rare ambiguous-end disambiguation case; the
-		// default argument lives HERE (a default may only appear once
-		// across all declarations of a function).
-		std::uint32_t DetermineOpenEnds(rage::scrThread* thread, std::uint32_t seat, std::int32_t* outPips, std::uint32_t maxOut, bool verboseLog = false);
-
-		// CONFIRMED LIVE (2026-09-16/17): the prop's owner field really
-		// does flip seat+2 -> kTilePropBoardOwnerValue for the tile just
-		// played -- the mechanism is correct -- but only after a real
-		// ~1.3-2.9s delay (almost certainly the placement's slide-to-
-		// board animation). A same-tick assumption and then a 300-TICK
-		// windowed correlation (this file's own header comment's
-		// "Session 12" entry, part 3, has the full three-round story)
-		// both found nothing at first. The windowed attempt used a WRONG
-		// time conversion: it assumed ~60 ticks/s, but a live log showed
-		// UpdateBoardTracker() actually runs at ~165 ticks/s on this
-		// machine (measured directly from consecutive raw-dump log
-		// timestamps: 561 ticks in 3.401s), so its 300-tick window was
-		// only ~1.8s -- too short for most of the observed 1.3-2.9s
-		// delays, and ONE play that happened to be fast enough (1.3s) DID
-		// correlate correctly ("LATE transition ... resolved pending
-		// play"), proving the matching logic itself works. Fixed by
-		// switching the window to WALL-CLOCK TIME
-		// (std::chrono::steady_clock) instead of a tick count, immune to
-		// however fast this actually ticks on a given machine.
-		constexpr double kCorrelationWindowSeconds = 8.0; // generous vs. the observed ~1.3-2.9s animation delay
-
-		struct PendingTransition
-		{
-			bool used = false;
-			std::chrono::steady_clock::time_point when{};
-			std::int32_t propSlot = -1;
-			std::int32_t seat = -1; // whose hand this prop transitioned FROM
-		};
-
-		struct PendingPlay
-		{
-			bool used = false;
-			std::chrono::steady_clock::time_point when{};
-			std::int32_t seat = -1;
-			std::int32_t exposedPip = -1;  // the pip THIS play exposes, already resolved by the open-ends bookkeeping
-			std::int32_t secondPip = -1;   // opening move only: the tile's OTHER pip (also exposed, same physical prop); -1 otherwise
-		};
-
-		struct BoardTracker
-		{
-			std::array<std::array<DominoHandEval::Tile, kMaxHandCapacity>, kMaxSeats> hands{};
-			std::array<std::int32_t, kMaxSeats> handCounts{ -1, -1, -1, -1 };
-			std::array<std::int32_t, kTileSetSize> lastPropOwner{};
-			bool propOwnerKnown = false; // false until the first tick's owner snapshot is captured
-			std::array<std::int32_t, 7> propForPip{ -1, -1, -1, -1, -1, -1, -1 };
-
-			int tickCounter = 0;
-			std::array<PendingTransition, 8> pendingTransitions{};
-			std::array<PendingPlay, 8> pendingPlays{};
-		};
-
-		BoardTracker g_boardTracker;
-
-		std::int32_t GetPropForOpenPip(std::int32_t pip)
-		{
-			if (pip < 0 || pip > 6)
-				return -1;
-			return g_boardTracker.propForPip[static_cast<std::size_t>(pip)];
-		}
-
-		void ResetBoardTracker()
-		{
-			g_boardTracker.handCounts.fill(-1);
-			g_boardTracker.propOwnerKnown = false;
-			g_boardTracker.propForPip.fill(-1);
-			for (auto& t : g_boardTracker.pendingTransitions)
-				t.used = false;
-			for (auto& p : g_boardTracker.pendingPlays)
-				p.used = false;
-		}
-
-		// Finds the oldest UNUSED pending transition from `seat`'s hand
-		// within the correlation window of `now`, marks it used, and
-		// returns its prop slot -- or -1 if none matches. Called both
-		// right after a fresh transition is queued this same tick (an
-		// immediate match) and, on a later tick, when a play finally
-		// resolves against a transition seen earlier.
-		std::int32_t TakeMatchingTransition(std::int32_t seat, std::chrono::steady_clock::time_point now)
-		{
-			std::int32_t best = -1;
-			std::chrono::steady_clock::time_point bestWhen{};
-			std::size_t bestIndex = 0;
-			for (std::size_t i = 0; i < g_boardTracker.pendingTransitions.size(); i++)
-			{
-				PendingTransition& t = g_boardTracker.pendingTransitions[i];
-				if (!t.used && t.seat == seat && std::chrono::duration<double>(now - t.when).count() <= kCorrelationWindowSeconds &&
-					(best < 0 || t.when < bestWhen))
-				{
-					best = t.propSlot;
-					bestWhen = t.when;
-					bestIndex = i;
-				}
-			}
-			if (best >= 0)
-				g_boardTracker.pendingTransitions[bestIndex].used = true;
-			return best;
-		}
-
-		// Picks a free slot in `entries` if one exists, else the single
-		// oldest occupied one (these buffers are sized generously relative
-		// to how often a real play/transition happens, so eviction should
-		// never actually matter in practice). `entries` elements need only
-		// a `.used` bool and a `.when` timestamp -- works for either
-		// pending queue below.
-		template <typename Entry, std::size_t N>
-		std::size_t PickSlotForInsert(const std::array<Entry, N>& entries)
-		{
-			std::size_t oldestIndex = 0;
-			std::chrono::steady_clock::time_point oldestWhen = entries[0].when;
-			for (std::size_t i = 0; i < N; i++)
-			{
-				if (!entries[i].used)
-					return i;
-				if (entries[i].when <= oldestWhen)
-				{
-					oldestWhen = entries[i].when;
-					oldestIndex = i;
-				}
-			}
-			return oldestIndex;
-		}
-
-		void PushPendingTransition(std::chrono::steady_clock::time_point when, std::int32_t propSlot, std::int32_t seat)
-		{
-			std::size_t slot = PickSlotForInsert(g_boardTracker.pendingTransitions);
-			g_boardTracker.pendingTransitions[slot] = PendingTransition{ false, when, propSlot, seat };
-		}
-
-		// Finds the oldest UNUSED pending play for `seat` within the
-		// correlation window, marks it used, and returns its exposedPip
-		// (-1 if none matches) plus its secondPip (opening moves only)
-		// via `outSecondPip`.
-		std::int32_t TakeMatchingPlay(std::int32_t seat, std::chrono::steady_clock::time_point now, std::int32_t& outSecondPip)
-		{
-			std::int32_t best = -1;
-			std::chrono::steady_clock::time_point bestWhen{};
-			std::size_t bestIndex = 0;
-			outSecondPip = -1;
-			for (std::size_t i = 0; i < g_boardTracker.pendingPlays.size(); i++)
-			{
-				PendingPlay& p = g_boardTracker.pendingPlays[i];
-				if (!p.used && p.seat == seat && std::chrono::duration<double>(now - p.when).count() <= kCorrelationWindowSeconds &&
-					(best < 0 || p.when < bestWhen))
-				{
-					best = p.exposedPip;
-					bestWhen = p.when;
-					bestIndex = i;
-				}
-			}
-			if (best >= 0)
-			{
-				outSecondPip = g_boardTracker.pendingPlays[bestIndex].secondPip;
-				g_boardTracker.pendingPlays[bestIndex].used = true;
-			}
-			return best;
-		}
-
-		void PushPendingPlay(std::chrono::steady_clock::time_point when, std::int32_t seat, std::int32_t exposedPip, std::int32_t secondPip = -1)
-		{
-			std::size_t slot = PickSlotForInsert(g_boardTracker.pendingPlays);
-			g_boardTracker.pendingPlays[slot] = PendingPlay{ false, when, seat, exposedPip, secondPip };
-		}
-
-#ifdef _DEBUG
-		// Confirms/denies BoardTracker's own map after each play it
-		// processes -- the direct evidence for whether GetPropForOpenPip()
-		// will have a real target the next time advice needs one.
-		void LogBoardTrackerMap()
-		{
-			std::ostringstream props;
-			for (std::int32_t pip = 0; pip <= 6; pip++)
-			{
-				std::int32_t slot = g_boardTracker.propForPip[static_cast<std::size_t>(pip)];
-				if (slot >= 0)
-					props << pip << "->propSlot" << slot << " ";
-			}
-			Log::Write("Trace: board tracker propForPip=[{}]", props.str());
-		}
-#endif
-
-		// Called once per tick from DrawOverlay(), unconditionally (Debug
-		// AND Release) -- see BoardTracker's own header comment for the
-		// full mechanism.
-		void UpdateBoardTracker(rage::scrThread* thread)
-		{
-			std::int32_t turnSeat = RoundLocal(thread).At(kCurrentTurnSeatFieldOffset).AsInt32();
-			if (turnSeat < 0)
-			{
-				ResetBoardTracker();
-				return;
-			}
-
-			std::int32_t playedSeat = -1;
-			DominoHandEval::Tile playedTile;
-			bool anyPlayDetected = false;
-
-			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
-			{
-				std::int32_t occupancyMarker = SeatLocal(thread, seat).At(kSeatOccupancyOffset).AsInt32();
-				if (occupancyMarker != static_cast<std::int32_t>(seat))
-				{
-					g_boardTracker.handCounts[seat] = -1;
-					continue;
-				}
-
-				std::int32_t handCount = SeatLocal(thread, seat).At(kSeatHandCountOffset).AsInt32();
-				if (handCount < 0)
-					handCount = 0;
-				if (handCount > static_cast<std::int32_t>(kMaxHandCapacity))
-					handCount = static_cast<std::int32_t>(kMaxHandCapacity);
-
-				std::array<DominoHandEval::Tile, kMaxHandCapacity> current{};
-				for (std::int32_t i = 0; i < handCount; i++)
-					current[static_cast<std::size_t>(i)] = ReadHandTile(thread, seat, static_cast<std::uint32_t>(i));
-
-				std::int32_t lastCount = g_boardTracker.handCounts[seat];
-				if (lastCount >= 0 && handCount < lastCount && !anyPlayDetected)
-				{
-					std::array<int, DominoHandEval::kTileSetSize> oldCounts{}, newCounts{};
-					CountTilesByValue(g_boardTracker.hands[seat].data(), lastCount, oldCounts);
-					CountTilesByValue(current.data(), handCount, newCounts);
-					for (int idx = 0; idx < static_cast<int>(DominoHandEval::kTileSetSize) && !anyPlayDetected; idx++)
-					{
-						if (newCounts[static_cast<std::size_t>(idx)] < oldCounts[static_cast<std::size_t>(idx)])
-						{
-							playedSeat = static_cast<std::int32_t>(seat);
-							playedTile = DominoHandEval::DecodeTile(idx);
-							anyPlayDetected = true;
-						}
-					}
-				}
-
-				g_boardTracker.handCounts[seat] = handCount;
-				g_boardTracker.hands[seat] = current;
-			}
-
-			g_boardTracker.tickCounter++;
-			int nowTick = g_boardTracker.tickCounter; // diagnostic label only, correlation uses wall-clock time below
-			auto now = std::chrono::steady_clock::now();
-
-#ifdef _DEBUG
-			// RAW dump: the diagnostic that finally found the real
-			// mechanism (2026-09-17, see this file's own header comment's
-			// "Session 12" entry, part 3) -- logs any of the 28 props'
-			// owner value changing at all, unfiltered, every tick,
-			// regardless of whether it matches the pattern the windowed
-			// correlation above is looking for. This is what proved the
-			// transition is real but delayed ~1.3-2.9s (a placement-slide
-			// animation), not absent. Kept as a standing diagnostic --
-			// cheap, since the Log::Write only fires when something
-			// actually changed -- so a future live report showing a wrong
-			// or missing "PLAY HERE!" marker has this to check first.
-			{
-				std::ostringstream changed;
-				int changedCount = 0;
-				for (std::int32_t i = 0; i < static_cast<std::int32_t>(kTileSetSize); i++)
-				{
-					std::int32_t before = g_boardTracker.propOwnerKnown ? g_boardTracker.lastPropOwner[static_cast<std::size_t>(i)] : -999;
-					std::int32_t nowOwner = TilePropLocal(thread, i).At(kTilePropOwnerFieldOffset).AsInt32();
-					if (before != nowOwner)
-					{
-						changed << "slot" << i << ":" << before << "->" << nowOwner << " ";
-						changedCount++;
-					}
-				}
-				if (changedCount > 0)
-					Log::Write("Trace: board tracker RAW owner change at tick {}: {} prop(s): {}", nowTick, changedCount, changed.str());
-			}
-#endif
-
-			// Owner transition scan -- FIRST, before processing this
-			// tick's own play, so a same-tick transition is already in
-			// the pending-transitions buffer by the time the play below
-			// looks for one (see TakeMatchingTransition()'s call site).
-			// For each prop whose owner just became "on-board", either
-			// resolve it immediately against an already-pending play from
-			// that seat (a play detected on an EARLIER tick, transition
-			// arriving late -- the delay LogBoardTrackerMap()'s own
-			// session showed is real), or queue it for a play not yet
-			// detected.
-			if (g_boardTracker.propOwnerKnown)
-			{
-				for (std::int32_t i = 0; i < static_cast<std::int32_t>(kTileSetSize); i++)
-				{
-					std::int32_t lastOwner = g_boardTracker.lastPropOwner[static_cast<std::size_t>(i)];
-					std::int32_t nowOwner = TilePropLocal(thread, i).At(kTilePropOwnerFieldOffset).AsInt32();
-					g_boardTracker.lastPropOwner[static_cast<std::size_t>(i)] = nowOwner;
-					if (nowOwner != kTilePropBoardOwnerValue || lastOwner == kTilePropBoardOwnerValue)
-						continue; // not a fresh hand-to-board transition
-					std::int32_t fromSeat = lastOwner - kTilePropSeatOwnerBase;
-					if (fromSeat < 0 || fromSeat >= static_cast<std::int32_t>(kMaxSeats))
-						continue; // not a real seat marker (e.g. still mid-setup)
-
-					std::int32_t secondPip = -1;
-					std::int32_t exposedPip = TakeMatchingPlay(fromSeat, now, secondPip);
-					if (exposedPip >= 0)
-					{
-						g_boardTracker.propForPip[static_cast<std::size_t>(exposedPip)] = i;
-						if (secondPip >= 0)
-							g_boardTracker.propForPip[static_cast<std::size_t>(secondPip)] = i;
-#ifdef _DEBUG
-						Log::Write("Trace: board tracker LATE transition seat {} propSlot={} resolved pending play (exposed pip {})",
-							fromSeat, i, exposedPip);
-						LogBoardTrackerMap();
-#endif
-					}
-					else
-					{
-						PushPendingTransition(now, i, fromSeat);
-					}
-				}
-			}
-			else
-			{
-				for (std::int32_t i = 0; i < static_cast<std::int32_t>(kTileSetSize); i++)
-					g_boardTracker.lastPropOwner[static_cast<std::size_t>(i)] = TilePropLocal(thread, i).At(kTilePropOwnerFieldOffset).AsInt32();
-			}
-			g_boardTracker.propOwnerKnown = true;
-
-			if (!anyPlayDetected)
-				return;
-
-			// GROUND-TRUTH RESYNC (2026-09-17, fixes a confirmed live bug):
-			// this used to update openPips INCREMENTALLY from the played
-			// tile alone (remove the matched end, add the tile's other
-			// pip), the same way DominoSearch::OpenEnds does for its own
-			// PURELY HYPOTHETICAL search tree. That works for a search
-			// that only ever sees moves IT chose, but this tracker
-			// observes the REAL board across every seat, and a live
-			// session proved it can drift: a stale pip lingered in
-			// openPips well after the real board had moved on (confirmed
-			// against LogOpponentCandidateProbe()'s own already-trusted,
-			// zero-mismatch-all-session open-end read), silently making
-			// GetPropForOpenPip() return nothing for a pip that WAS
-			// really open, with no marker shown and no error logged.
-			// Fixed by dropping the hand-rolled model entirely: every
-			// detected play re-reads the REAL current open-end set via
-			// the same trusted DetermineOpenEnds() path
-			// DetermineBestMove()/LogOpponentCandidateProbe() already use
-			// (one extra call, only on a play tick -- a few times a
-			// minute, not every tick), and self-heals by construction
-			// since the fresh read fully REPLACES anything remembered
-			// from before rather than patching it incrementally.
-			std::int32_t probeSeat = -1;
-			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
-			{
-				if (g_boardTracker.handCounts[seat] > 0)
-				{
-					probeSeat = static_cast<std::int32_t>(seat);
-					break;
-				}
-			}
-			if (probeSeat < 0)
-				return; // nobody left with a hand to test against (round just ended)
-
-			std::array<std::int32_t, 7> freshPips{};
-			std::uint32_t freshCount = DetermineOpenEnds(thread, static_cast<std::uint32_t>(probeSeat), freshPips.data(), static_cast<std::uint32_t>(freshPips.size()));
-			bool freshOpen[7] = {};
-			for (std::uint32_t i = 0; i < freshCount; i++)
-				freshOpen[freshPips[i]] = true;
-
-			// Any pip no longer open ANYWHERE per the fresh read is
-			// stale -- drop its marker rather than risk pointing at a
-			// now-covered tile.
-			for (std::int32_t v = 0; v <= 6; v++)
-				if (!freshOpen[v])
-					g_boardTracker.propForPip[static_cast<std::size_t>(v)] = -1;
-
-			// Which of THIS play's own pips are (still) open per the
-			// fresh read is what it exposes: a double re-exposes its own
-			// single value; a normal tile keeps whichever of its two
-			// pips the ground truth still shows open (the other was the
-			// one it matched against and is now covered). Both, for the
-			// opening move (or any play that happens to leave both open).
-			bool exposeLow = freshOpen[playedTile.low];
-			bool exposeHigh = playedTile.high != playedTile.low && freshOpen[playedTile.high];
-			if (!exposeLow && !exposeHigh)
-				return; // shouldn't happen for a legal play against a correct read -- nothing to attach a marker to
-
-			std::int32_t exposed = exposeLow ? playedTile.low : playedTile.high;
-			std::int32_t secondPip = (exposeLow && exposeHigh) ? playedTile.high : -1;
-
-			// Now try to match this play against an ALREADY-pending
-			// transition (either pushed earlier this same tick above, or
-			// from an earlier tick -- a transition that arrived before we
-			// noticed the hand shrink).
-			std::int32_t matchedPropSlot = TakeMatchingTransition(playedSeat, now);
-
-			if (matchedPropSlot >= 0)
-			{
-				g_boardTracker.propForPip[static_cast<std::size_t>(exposed)] = matchedPropSlot;
-				if (secondPip >= 0)
-					g_boardTracker.propForPip[static_cast<std::size_t>(secondPip)] = matchedPropSlot;
-			}
-			else
-			{
-				// No transition seen yet for this seat -- queue the play
-				// (both pips, for an opening move) so the eventual
-				// (possibly delayed) transition resolves it above instead
-				// of guessing now.
-				PushPendingPlay(now, playedSeat, exposed, secondPip);
-			}
-
-#ifdef _DEBUG
-			// This is the exact thing to check against a real table if
-			// GetPropForOpenPip()'s marker isn't landing on the right
-			// physical tile live: does the prop-owner transition land
-			// within the correlation window of the hand-diff, and on
-			// which side? A "(queued, no transition yet)" here means the
-			// map won't have an entry for this play's exposed pip until a
-			// LATER tick's transition scan resolves it (see the "LATE
-			// transition" log line above).
-			Log::Write("Trace: board tracker seat {} played [{}|{}] -> propSlot={}{}",
-				playedSeat, playedTile.low, playedTile.high, matchedPropSlot,
-				matchedPropSlot < 0 ? " (queued, no transition yet)" : "");
-			LogBoardTrackerMap();
-#endif
 		}
 
 #ifdef _DEBUG
@@ -1941,10 +1468,7 @@ namespace DominoCheat
 		// default (false) -- the real mySeat advice path calls this every
 		// tick of the decision window and must not pay for or spam this.
 		// LogOpponentCandidateProbe() is the only caller that turns it on.
-		// (Forward-declared earlier, next to FindTilePropForTileValue(),
-		// for BoardTracker's own use -- default argument lives there now,
-		// not here, since C++ only allows it once across declarations.)
-		std::uint32_t DetermineOpenEnds(rage::scrThread* thread, std::uint32_t seat, std::int32_t* outPips, std::uint32_t maxOut, bool verboseLog)
+		std::uint32_t DetermineOpenEnds(rage::scrThread* thread, std::uint32_t seat, std::int32_t* outPips, std::uint32_t maxOut, bool verboseLog = false)
 		{
 			ScriptLocal seatLocal = SeatLocal(thread, seat);
 			std::int32_t handCount = seatLocal.At(kSeatHandCountOffset).AsInt32();
@@ -2246,6 +1770,35 @@ namespace DominoCheat
 				out[written++] = candidate;
 			}
 			return written;
+		}
+
+		// Computes the real, physical world position of the board slot
+		// where hand tile `handIndex` would actually land -- the direct
+		// production use of ComputeCandidateWorldPosition()'s decompile-
+		// derived formula (CONFIRMED LIVE 2026-09-17 via a cross-check
+		// against BoardTracker's own independently-tracked prop
+		// correlation, since removed -- see that function's own header
+		// comment). Filters QueryNativeCandidates() to the ones matching
+		// `handIndex`; returns false (no position) unless exactly one
+		// matches. More than one match is the hasAlternateEnd scenario --
+		// the raw candidate list alone doesn't say which grid entry
+		// belongs to which open end, so no marker beats a guessed one.
+		bool ComputeRecommendedBoardPosition(rage::scrThread* thread, std::uint32_t mySeatU, std::int32_t handIndex, Vector3& outPos)
+		{
+			std::array<DominoAiPolicy::Candidate, kCandidateCapacity> candidates{};
+			std::uint32_t count = QueryNativeCandidates(thread, mySeatU, candidates.data(), static_cast<std::uint32_t>(candidates.size()));
+
+			int matches = 0;
+			for (std::uint32_t i = 0; i < count; i++)
+			{
+				const DominoAiPolicy::Candidate& c = candidates[i];
+				if (!c.hasPlacement || c.handIndex != handIndex)
+					continue;
+
+				outPos = ComputeCandidateWorldPosition(thread, c.gridF1, c.gridF2, c.gridOrientation);
+				matches++;
+			}
+			return matches == 1;
 		}
 
 		// Table points target, Round.f_666.f_14[0] -- set to 100/90/60 by
@@ -2601,20 +2154,14 @@ namespace DominoCheat
 		constexpr int kReleaseWorldMarkerFontSize = 26;
 #endif
 
-		// Draws `text` directly over tile `rawTileIndex`'s real 3D prop
-		// (GetTilePropHandle(), see that function's own header comment)
-		// by projecting its live world position to screen -- the exact
-		// same ENTITY::GET_ENTITY_COORDS + GRAPHICS::GET_SCREEN_COORD_
-		// FROM_WORLD_COORD technique PokerCheat's own community-card
-		// objects use.
-		void DrawWorldMarkerOnTile(rage::scrThread* thread, std::int32_t rawTileIndex, const char* text)
+		// Draws `text` at the given real world position, projected to
+		// screen -- the exact same GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_
+		// COORD technique PokerCheat's own community-card objects use.
+		// Shared by DrawWorldMarkerOnTile() (a physical prop's live
+		// position) and DrawOverlay()'s own board-marker block (a
+		// computed position, see ComputeRecommendedBoardPosition()).
+		void DrawWorldMarkerAtPosition(const Vector3& coords, const char* text)
 		{
-			std::int32_t handle = GetTilePropHandle(thread, rawTileIndex);
-			if (handle == 0 || !ENTITY::DOES_ENTITY_EXIST(handle))
-				return;
-
-			Vector3 coords = ENTITY::GET_ENTITY_COORDS(handle, true, true);
-
 			float screenX = 0.0f, screenY = 0.0f;
 			if (!GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_COORD(coords.x, coords.y, coords.z, &screenX, &screenY))
 				return;
@@ -2631,6 +2178,17 @@ namespace DominoCheat
 #endif
 
 			DrawBgText(text, screenX + offsetX, screenY + offsetY, fontSize, 255, 240, 120);
+		}
+
+		// Draws `text` directly over tile `rawTileIndex`'s real 3D prop
+		// (GetTilePropHandle(), see that function's own header comment).
+		void DrawWorldMarkerOnTile(rage::scrThread* thread, std::int32_t rawTileIndex, const char* text)
+		{
+			std::int32_t handle = GetTilePropHandle(thread, rawTileIndex);
+			if (handle == 0 || !ENTITY::DOES_ENTITY_EXIST(handle))
+				return;
+
+			DrawWorldMarkerAtPosition(ENTITY::GET_ENTITY_COORDS(handle, true, true), text);
 		}
 
 		// Maps each OPPONENT (non-you) seat to a DENSE row index (1, 2,
@@ -3103,53 +2661,6 @@ namespace DominoCheat
 			return isMySeat ? 4 : 3;
 		}
 
-		// Cross-checks ComputeCandidateWorldPosition()'s decompile-derived
-		// formula against BoardTracker's own independently-derived,
-		// already-confirmed-live prop correlation (2026-09-17) -- WITHOUT
-		// needing a dedicated new live test to prove or disprove the
-		// formula: whenever the recommended pip already has a correlated
-		// prop (GetPropForOpenPip()), this logs that prop's REAL live
-		// coordinate side by side with the formula's own computed
-		// coordinate for every native candidate matching the recommended
-		// hand tile (there can be more than one -- the exact
-		// hasAlternateEnd scenario -- since the raw candidate list alone
-		// doesn't say which grid entry corresponds to which end; logging
-		// all of them lets the distances themselves show which one
-		// matches). A close match (a few cm) on the FIRST live session
-		// this runs in is enough to confirm the formula -- no guessing,
-		// no waiting on a placement animation, just two numbers next to
-		// each other in the log.
-		void LogCandidatePositionCrossCheck(rage::scrThread* thread, std::uint32_t mySeatU, std::int32_t handIndex, std::int32_t endPip)
-		{
-			if (endPip < 0)
-				return;
-			std::int32_t trackedPropSlot = GetPropForOpenPip(endPip);
-			if (trackedPropSlot < 0)
-				return; // BoardTracker has no ground truth for this pip yet -- nothing to compare against
-
-			std::int32_t trackedHandle = GetTilePropHandle(thread, trackedPropSlot);
-			if (trackedHandle == 0 || !ENTITY::DOES_ENTITY_EXIST(trackedHandle))
-				return;
-			Vector3 trackedPos = ENTITY::GET_ENTITY_COORDS(trackedHandle, true, true);
-
-			std::array<DominoAiPolicy::Candidate, kCandidateCapacity> candidates{};
-			std::uint32_t count = QueryNativeCandidates(thread, mySeatU, candidates.data(), static_cast<std::uint32_t>(candidates.size()));
-
-			for (std::uint32_t i = 0; i < count; i++)
-			{
-				const DominoAiPolicy::Candidate& c = candidates[i];
-				if (!c.hasPlacement || c.handIndex != handIndex)
-					continue;
-
-				Vector3 computed = ComputeCandidateWorldPosition(thread, c.gridF1, c.gridF2, c.gridOrientation);
-				float dx = computed.x - trackedPos.x, dy = computed.y - trackedPos.y, dz = computed.z - trackedPos.z;
-				float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-				Log::Write("Trace: candidate position cross-check propSlot={} tracked=({:.4f},{:.4f},{:.4f}) candidate[{}] grid=({},{},{}) computed=({:.4f},{:.4f},{:.4f}) distance={:.4f}",
-					trackedPropSlot, trackedPos.x, trackedPos.y, trackedPos.z,
-					i, c.gridF1, c.gridF2, c.gridOrientation, computed.x, computed.y, computed.z, distance);
-			}
-		}
-
 		void LogDebugTrace(rage::scrThread* thread)
 		{
 			std::int32_t turnSeat = RoundLocal(thread).At(kCurrentTurnSeatFieldOffset).AsInt32();
@@ -3204,7 +2715,6 @@ namespace DominoCheat
 						pred.tile = rec.tile;
 						pred.endPip = rec.endPip;
 						pred.resultPip = rec.resultPip;
-						LogCandidatePositionCrossCheck(thread, static_cast<std::uint32_t>(turnSeat), rec.handIndex, rec.endPip);
 						std::ostringstream label;
 						if (rec.isWinningMove)
 							label << "WINNING MOVE " << FormatTile(rec.tile);
@@ -3345,12 +2855,6 @@ namespace DominoCheat
 
 		void DrawOverlay(rage::scrThread* thread)
 		{
-			// Unconditional, Debug AND Release both -- see BoardTracker's
-			// own header comment for why this can't live inside the
-			// #ifdef _DEBUG trace below (it has to observe every seat's
-			// plays all round, not just during mySeat's own turn).
-			UpdateBoardTracker(thread);
-
 #ifdef _DEBUG
 			LogDebugTrace(thread);
 
@@ -3530,18 +3034,16 @@ namespace DominoCheat
 							DrawWorldMarkerOnTile(thread, propSlot, rec.isWinningMove ? Localization::WinningTileMarker() : Localization::PlayThisTileMarker());
 
 						// Mark the actual BOARD POSITION to place it on --
-						// CONFIRMED LIVE 2026-09-17, see BoardTracker's own
-						// header comment for the full observational
-						// mechanism. No marker (rather than a guessed or
-						// stale one) if the tracker hasn't correlated this
-						// specific open pip to a prop yet -- e.g. right
-						// after the mod loads mid-round, before it has
-						// observed a single play.
+						// CONFIRMED LIVE 2026-09-17, see
+						// ComputeRecommendedBoardPosition()'s own header
+						// comment. No marker (rather than a guessed one) if
+						// the native candidate list doesn't resolve to
+						// exactly one grid slot for this hand tile.
 						if (rec.endPip >= 0)
 						{
-							std::int32_t boardPropSlot = GetPropForOpenPip(rec.endPip);
-							if (boardPropSlot >= 0)
-								DrawWorldMarkerOnTile(thread, boardPropSlot, Localization::PlayHereMarker());
+							Vector3 boardPos{};
+							if (ComputeRecommendedBoardPosition(thread, static_cast<std::uint32_t>(mySeat), rec.handIndex, boardPos))
+								DrawWorldMarkerAtPosition(boardPos, Localization::PlayHereMarker());
 						}
 					}
 				}
@@ -3594,160 +3096,6 @@ namespace DominoCheat
 			RoundLocal(thread).At(kDeckCursorFieldOffset).Index(), deckCursor, BoneyardDataLocal(thread).Index(), turnSeat, turnSubState);
 	}
 
-	void ProbeMySeat()
-	{
-		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
-		if (!thread)
-		{
-			Log::Write("DominoCheat::ProbeMySeat: dominoes_sp not running");
-			return;
-		}
-
-		std::int32_t myPed = static_cast<std::int32_t>(PLAYER::PLAYER_PED_ID());
-		std::int32_t mySeat = FindMySeatByPed(thread);
-
-		Log::Write("DominoCheat::ProbeMySeat: PLAYER_PED_ID()={} SceneSlot={} resolved mySeat={}",
-			myPed, SceneLocal(thread).Index(), mySeat);
-
-		for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
-		{
-			ScriptLocal pedLocal = ScenePedLocal(thread, seat).At(kScenePedHandleOffset);
-			std::int32_t pedHandle = pedLocal.AsInt32();
-			Log::Write("  seat {} ped handle (slot {}) = {}{}",
-				seat, pedLocal.Index(), pedHandle, (static_cast<std::int32_t>(seat) == mySeat) ? "  <-- matches PLAYER::PLAYER_PED_ID()" : "");
-		}
-	}
-
-	void ProbeSeatHands()
-	{
-		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
-		if (!thread)
-		{
-			Log::Write("DominoCheat::ProbeSeatHands: dominoes_sp not running");
-			return;
-		}
-
-		for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
-		{
-			ScriptLocal seatLocal = SeatLocal(thread, seat);
-			std::int32_t occupancyMarker = seatLocal.At(kSeatOccupancyOffset).AsInt32();
-			std::int32_t activeFlag = seatLocal.At(kSeatActiveFlagOffset).AsInt32();
-			std::int32_t score = seatLocal.At(kSeatScoreOffset).AsInt32();
-			std::int32_t handCount = seatLocal.At(kSeatHandCountOffset).AsInt32();
-
-			// Dumps up to kMaxHandCapacity (not just kHandSize) raw slots
-			// regardless of handCount -- deliberately shows stale leftover
-			// data past the real count too (this is how the earlier
-			// duplicate-tile pattern that confirmed f_3, not a raw scan,
-			// is the trustworthy count was originally spotted), and now
-			// also covers the range a boneyard-grown hand could occupy.
-			std::ostringstream tiles;
-			for (std::int32_t i = 0; i < static_cast<std::int32_t>(kMaxHandCapacity); i++)
-			{
-				auto tile = ReadHandTile(thread, seat, static_cast<std::uint32_t>(i));
-				tiles << FormatTile(tile) << " ";
-			}
-
-			Log::Write("DominoCheat::ProbeSeatHands: seat {} (base slot {}): occupancyMarker={} (expect =={} if dealt) activeFlag={} score={} handCount={} tiles={}",
-				seat, seatLocal.Index(), occupancyMarker, seat, activeFlag, score, handCount, tiles.str());
-		}
-	}
-
-	void ProbeBoneyard()
-	{
-		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
-		if (!thread)
-		{
-			Log::Write("DominoCheat::ProbeBoneyard: dominoes_sp not running");
-			return;
-		}
-
-		std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
-
-		std::ostringstream tiles;
-		for (std::int32_t i = deckCursor; i < static_cast<std::int32_t>(kTileSetSize); i++)
-			tiles << FormatTile(ReadBoneyardTile(thread, i)) << " ";
-
-		Log::Write("DominoCheat::ProbeBoneyard: deckCursor={} remaining={} tiles={}",
-			deckCursor, static_cast<std::int32_t>(kTileSetSize) - deckCursor, tiles.str());
-	}
-
-	void ProbeLegalMoves()
-	{
-		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
-		if (!thread)
-		{
-			Log::Write("DominoCheat::ProbeLegalMoves: dominoes_sp not running");
-			return;
-		}
-
-		std::int32_t mySeat = FindMySeatByPed(thread);
-		if (mySeat < 0)
-		{
-			Log::Write("DominoCheat::ProbeLegalMoves: mySeat not resolved (FindMySeatByPed returned -1)");
-			return;
-		}
-
-		void* handPtr = GamePointers::GetScriptLocalAddress(thread, SeatLocal(thread, static_cast<std::uint32_t>(mySeat)).At(kSeatHandArrayFieldOffset).Index());
-
-		std::array<std::int64_t, 1 + kCandidateCapacity * kCandidateStride> buffer{};
-		buffer[0] = kCandidateCapacity;
-
-		int count = MINIGAME::_FIND_PLAYABLE_HAND_TILES(reinterpret_cast<Any*>(handPtr), reinterpret_cast<Any*>(buffer.data()));
-
-		std::ostringstream rawWords;
-		for (std::size_t i = 0; i < buffer.size(); i++)
-			rawWords << static_cast<std::int32_t>(buffer[i]) << " ";
-
-		Log::Write("DominoCheat::ProbeLegalMoves: mySeat={} handPtr={:#x} native returned count={} raw buffer (76 words: header + 15x[hand idx, w1, w2, w3, sum])={}",
-			mySeat, reinterpret_cast<std::uintptr_t>(handPtr), count, rawWords.str());
-
-		std::int32_t handCount = SeatLocal(thread, static_cast<std::uint32_t>(mySeat)).At(kSeatHandCountOffset).AsInt32();
-		std::array<std::int32_t, kCandidateCapacity> playable{};
-		std::uint32_t playableCount = FindPlayableTiles(thread, static_cast<std::uint32_t>(mySeat), playable.data(), static_cast<std::uint32_t>(playable.size()));
-
-		std::ostringstream resolved;
-		for (std::uint32_t i = 0; i < playableCount; i++)
-		{
-			std::int32_t handIndex = playable[i];
-			std::string tileStr = "(out of range)";
-			if (handIndex >= 0 && handIndex < handCount)
-				tileStr = FormatTile(ReadHandTile(thread, static_cast<std::uint32_t>(mySeat), static_cast<std::uint32_t>(handIndex)));
-			resolved << "handIndex=" << handIndex << " -> " << tileStr << "  ";
-		}
-
-		Log::Write("DominoCheat::ProbeLegalMoves: resolved {} playable tile(s): {}", playableCount, resolved.str());
-	}
-
-	void ProbeOpenEnds()
-	{
-		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
-		if (!thread)
-		{
-			Log::Write("DominoCheat::ProbeOpenEnds: dominoes_sp not running");
-			return;
-		}
-
-		std::int32_t mySeat = FindMySeatByPed(thread);
-		if (mySeat < 0)
-		{
-			Log::Write("DominoCheat::ProbeOpenEnds: mySeat not resolved (FindMySeatByPed returned -1)");
-			return;
-		}
-
-		std::int32_t handCount = SeatLocal(thread, static_cast<std::uint32_t>(mySeat)).At(kSeatHandCountOffset).AsInt32();
-
-		std::array<std::int32_t, 7> pips{};
-		std::uint32_t pipCount = DetermineOpenEnds(thread, static_cast<std::uint32_t>(mySeat), pips.data(), static_cast<std::uint32_t>(pips.size()));
-
-		std::ostringstream out;
-		for (std::uint32_t i = 0; i < pipCount; i++)
-			out << pips[i] << " ";
-
-		Log::Write("DominoCheat::ProbeOpenEnds: mySeat={} handCount={} open end pip value(s) found: {}",
-			mySeat, handCount, out.str().empty() ? std::string("(none)") : out.str());
-	}
-
 	void ProbeBestMove()
 	{
 		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
@@ -3794,58 +3142,6 @@ namespace DominoCheat
 			Log::Write("DominoCheat::ProbeBestMove: mySeat={} handIndex={} tile={} playOnEnd={} resultingNewEnd={} opponentTilesThatAnswer={} verdict={} netPoints={}{} exact={} completedDepth={}",
 				mySeat, rec.handIndex, FormatTile(rec.tile), rec.endPip, rec.resultPip, rec.opponentRespondCount,
 				DominoSearch::OutcomeName(rec.outcome), rec.exact ? "" : "~", rec.points, rec.exact, rec.completedDepth);
-		}
-	}
-
-	// Consolidated (2026-09-13, to save F12 menu space -- was two
-	// probes, ProbeTileProps + ProbeTilePropOwnership, superseded now
-	// that ownership/value ARE confirmed -- see
-	// kSceneTilePropArrayFieldOffset's own header comment) diagnostic:
-	// for all 28 physical props, logs owner/value plus (for your own
-	// seat's props specifically) the live entity coords/screen position,
-	// which is the part still worth re-checking if a marker ever looks
-	// wrong on screen.
-	void ProbeTilePropOwnership()
-	{
-		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
-		if (!thread)
-		{
-			Log::Write("DominoCheat::ProbeTilePropOwnership: dominoes_sp not running");
-			return;
-		}
-
-		std::int32_t mySeat = FindMySeatByPed(thread);
-		Log::Write("DominoCheat::ProbeTilePropOwnership: mySeat={} (hand-owned prop's bare value == seat+{}, board-owned == {})",
-			mySeat, kTilePropSeatOwnerBase, kTilePropBoardOwnerValue);
-
-		for (std::int32_t propSlot = 0; propSlot < static_cast<std::int32_t>(DominoHandEval::kTileSetSize); propSlot++)
-		{
-			ScriptLocal prop = TilePropLocal(thread, propSlot);
-			std::int32_t owner = prop.At(kTilePropOwnerFieldOffset).AsInt32();
-			std::int32_t value = prop.At(kTilePropValueFieldOffset).AsInt32();
-			std::int32_t handle = prop.At(kTilePropHandleOffset).AsInt32();
-
-			bool isMine = (mySeat >= 0) && (owner == mySeat + kTilePropSeatOwnerBase);
-			std::string tileStr = (isMine && value >= 0 && value < static_cast<std::int32_t>(DominoHandEval::kTileSetSize))
-				? FormatTile(DominoHandEval::DecodeTile(value)) : "--";
-
-			std::string coordStr = "(no handle)";
-			if (handle != 0 && ENTITY::DOES_ENTITY_EXIST(handle))
-			{
-				Vector3 coords = ENTITY::GET_ENTITY_COORDS(handle, true, true);
-				float screenX = 0.0f, screenY = 0.0f;
-				bool onScreen = GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_COORD(coords.x, coords.y, coords.z, &screenX, &screenY);
-				std::ostringstream cs;
-				cs << "world=(" << coords.x << "," << coords.y << "," << coords.z << ") screen=";
-				if (onScreen)
-					cs << "(" << screenX << "," << screenY << ")";
-				else
-					cs << "off-screen";
-				coordStr = cs.str();
-			}
-
-			Log::Write("DominoCheat::ProbeTilePropOwnership: propSlot={} owner={} value={} tile={} handle={}{} {}",
-				propSlot, owner, value, tileStr, handle, isMine ? "  <-- mine" : "", coordStr);
 		}
 	}
 

@@ -27,13 +27,7 @@ namespace
 		g_mainMenu = new MenuBase(new MenuItemTitle("DominoCheat"));
 		g_mainMenu->AddItem(new MenuItemAction("Toggle Domino Cheat (see log)", DominoCheat::Toggle));
 		g_mainMenu->AddItem(new MenuItemAction("Probe Table Struct (see log)", DominoCheat::ProbeTableStruct));
-		//g_mainMenu->AddItem(new MenuItemAction("Probe My Seat (see log)", DominoCheat::ProbeMySeat));
-		//g_mainMenu->AddItem(new MenuItemAction("Probe Seat Hands (see log)", DominoCheat::ProbeSeatHands));
-		//g_mainMenu->AddItem(new MenuItemAction("Probe Boneyard (see log)", DominoCheat::ProbeBoneyard));
-		//g_mainMenu->AddItem(new MenuItemAction("Probe Legal Moves (see log)", DominoCheat::ProbeLegalMoves));
-		//g_mainMenu->AddItem(new MenuItemAction("Probe Open Ends (see log)", DominoCheat::ProbeOpenEnds));
 		g_mainMenu->AddItem(new MenuItemAction("Probe Best Move (see log)", DominoCheat::ProbeBestMove));
-		//g_mainMenu->AddItem(new MenuItemAction("Probe Tile Ownership (see log)", DominoCheat::ProbeTilePropOwnership));
 		g_mainMenu->AddItem(new MenuItemAction("Probe Domino Skin (see log)", DominoCheat::ProbeDominoSkin));
 		g_mainMenu->AddItem(new MenuItemAction("Dump Full Stack JSONL", DominoCheat::DumpFullStackJsonl));
 		g_mainMenu->AddItem(new MenuItemAction("Reload Config (see log)", Config::Reload));
