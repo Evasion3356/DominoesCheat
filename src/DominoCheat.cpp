@@ -797,7 +797,10 @@
 	   The board marker is now gated on that same entity resolving
 	   successfully (propHandle != 0), matching the existing "no marker
 	   beats a wrong one" convention. Builds clean (Debug + Release), all
-	   unit tests pass. NOT yet live-tested.
+	   unit tests pass. CONFIRMED LIVE (2026-09-17, same day) -- a
+	   follow-up user report confirmed "PLAY HERE!" now lands on the real
+	   physical board position, matching "PLAY THIS ONE!" 's own
+	   already-confirmed placement.
 */
 
 #include "DominoCheat.h"
@@ -3195,10 +3198,10 @@ namespace DominoCheat
 							DrawWorldMarkerOnTile(thread, propSlot, rec.isWinningMove ? Localization::WinningTileMarker() : Localization::PlayThisTileMarker());
 
 						// Mark the actual BOARD POSITION to place it on --
-						// see ComputeRecommendedBoardPosition()'s own header
-						// comment for the X/Y formula (CONFIRMED LIVE
-						// 2026-09-17 to be exact -- see that function's own
-						// comment). Its Z is NOT used here: a live log
+						// CONFIRMED LIVE (2026-09-17) to land correctly,
+						// see ComputeRecommendedBoardPosition()'s own
+						// header comment for the X/Y formula. Its Z is NOT
+						// used here: a live log
 						// comparison the same day found Scene's own base Z
 						// sits ~0.82 units below a real tile prop's actual
 						// height (CONFIRMED via ComputeRecommendedBoardPosition()'s
