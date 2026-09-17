@@ -764,6 +764,40 @@
 	   live-tested -- this is a plausible fix based on code inspection,
 	   not a confirmed one; the Debug log is there specifically to check
 	   it next session.
+
+	7. Same day, follow-up live report: fix 6's marker DID now appear, but
+	   at a fixed spot near the bottom of the screen, nowhere close to the
+	   real domino -- while "PLAY THIS ONE!" (the confirmed-working
+	   hand-tile marker) landed correctly in the SAME log. First
+	   suspected the per-tick trace logs themselves (~19000 near-identical
+	   lines for one ~2-minute decision -- fixed by rate-limiting both new
+	   traces to log only on an actual change, same "log on transition,
+	   not every tick" convention every other trace in this file already
+	   follows), then re-verified ComputeCandidateWorldPosition()'s
+	   formula line-by-line against the actual decompile (func_935/
+	   func_843/func_613/func_352, not just the prior session's own
+	   summary of it) -- everything ported exactly, buffer layout
+	   included. The rate-limited log then made the real cause visible
+	   directly: pos.x-sceneX and pos.y-sceneY matched
+	   gx/gy*0.013125 to four decimal places (the X/Y math is exact), and
+	   pos.z-sceneZ matched fLocal_14+0.005 exactly too (assuming
+	   fLocal_14=0, as originally assumed) -- but sceneZ ITSELF sat ~0.82
+	   units below a real tile prop's actual height in the same log
+	   entry. Scene's own base coordinate is apparently a floor/anchor
+	   reference for the play area, not the tabletop surface -- the REAL
+	   ghost-preview OBJECT the game creates compensates for this via its
+	   own model's geometry (mesh pivot low, mesh extends up to table
+	   height), which a flat 2D text marker drawn at the raw coordinate
+	   never gets for free. Fixed NOT by guessing a correction constant,
+	   but by overriding the computed position's Z with the recommended
+	   hand tile's own real entity height (DrawOverlay() already resolves
+	   this entity for "PLAY THIS ONE!", confirmed correct) -- sidesteps
+	   the question of what Scene's Z actually represents entirely, since
+	   every tile on the table sits at the same real height regardless.
+	   The board marker is now gated on that same entity resolving
+	   successfully (propHandle != 0), matching the existing "no marker
+	   beats a wrong one" convention. Builds clean (Debug + Release), all
+	   unit tests pass. NOT yet live-tested.
 */
 
 #include "DominoCheat.h"
@@ -1809,25 +1843,36 @@ namespace DominoCheat
 		// Computes the real, physical world position of the board slot
 		// where hand tile `handIndex` would actually land -- the direct
 		// production use of ComputeCandidateWorldPosition()'s decompile-
-		// derived formula. NOT yet live-confirmed as a drawn marker (see
-		// this function's own git history: an earlier version required
-		// EXACTLY ONE native candidate to match `handIndex` before
-		// drawing anything, on the untested assumption that more than one
-		// match only happens in the rare hasAlternateEnd case -- a live
-		// report of the marker never appearing at all points at that
-		// assumption being wrong: a real board very plausibly has more
-		// than one PHYSICAL open end sharing the same pip value, which
-		// QueryNativeCandidates() would legitimately return as separate
-		// candidates for the same hand tile even outside hasAlternateEnd.
-		// BoardTracker, the mechanism this replaced, tolerated exactly
-		// this ("whichever one was most recently observed", see its own
-		// former header comment) rather than refusing to draw. This now
-		// does the same: takes the FIRST matching candidate rather than
-		// demanding uniqueness -- still a genuinely valid placement for
-		// the tile either way, and the truly misleading case (the SAME
-		// tile fitting two DIFFERENT pip values) is already called out
-		// separately via MoveRecommendation::hasAlternateEnd's own
-		// on-screen warning, not this function's job to gate on.
+		// derived formula. The X/Y math is CONFIRMED LIVE exact
+		// (2026-09-17): a live log showed pos.x-sceneX and pos.y-sceneY
+		// matching gx/gy*0.013125 to four decimal places for the actual
+		// winning candidate's grid/orientation words. Z is NOT exact in
+		// the sense that matters for a drawn marker -- see DrawOverlay()'s
+		// own board-marker block for why its caller overrides
+		// outPos.z with a real entity's height instead of trusting this
+		// function's own Z (which the SAME log confirmed matches its
+		// ported formula bit-for-bit too -- fLocal_14+0.005 -- the issue
+		// is what Scene's OWN base Z means, not the math built on it).
+		//
+		// See this function's own git history for the candidate-matching
+		// logic below: an earlier version required EXACTLY ONE native
+		// candidate to match `handIndex` before drawing anything, on the
+		// untested assumption that more than one match only happens in
+		// the rare hasAlternateEnd case -- a live report of the marker
+		// never appearing at all points at that assumption being wrong: a
+		// real board very plausibly has more than one PHYSICAL open end
+		// sharing the same pip value, which QueryNativeCandidates() would
+		// legitimately return as separate candidates for the same hand
+		// tile even outside hasAlternateEnd. BoardTracker, the mechanism
+		// this replaced, tolerated exactly this ("whichever one was most
+		// recently observed", see its own former header comment) rather
+		// than refusing to draw. This now does the same: takes the FIRST
+		// matching candidate rather than demanding uniqueness -- still a
+		// genuinely valid placement for the tile either way, and the
+		// truly misleading case (the SAME tile fitting two DIFFERENT pip
+		// values) is already called out separately via
+		// MoveRecommendation::hasAlternateEnd's own on-screen warning,
+		// not this function's job to gate on.
 		bool ComputeRecommendedBoardPosition(rage::scrThread* thread, std::uint32_t mySeatU, std::int32_t handIndex, Vector3& outPos)
 		{
 			std::array<DominoAiPolicy::Candidate, kCandidateCapacity> candidates{};
@@ -3141,26 +3186,42 @@ namespace DominoCheat
 						// Mark the real, physical 3D tile itself -- see
 						// FindTilePropForTileValue()'s own header comment
 						// for the value-based (via .f_3, CONFIRMED LIVE)
-						// lookup this uses. NOT yet live-tested end to
-						// end (the lookup mechanism is confirmed; seeing
-						// the drawn text land on the right physical tile
-						// is not).
+						// lookup this uses. CONFIRMED LIVE (2026-09-17) --
+						// lands on the right physical tile.
 						std::int32_t rawTileValue = DominoHandEval::EncodeTile(rec.tile.low, rec.tile.high);
 						std::int32_t propSlot = FindTilePropForTileValue(thread, mySeat, rawTileValue);
-						if (propSlot >= 0)
+						std::int32_t propHandle = (propSlot >= 0) ? GetTilePropHandle(thread, propSlot) : 0;
+						if (propHandle != 0)
 							DrawWorldMarkerOnTile(thread, propSlot, rec.isWinningMove ? Localization::WinningTileMarker() : Localization::PlayThisTileMarker());
 
 						// Mark the actual BOARD POSITION to place it on --
 						// see ComputeRecommendedBoardPosition()'s own header
-						// comment. NOT yet live-confirmed as a drawn marker
-						// (a live report the same day it was wired in found
-						// nothing appeared at all -- see that function's
-						// own comment for the fix and what's still open).
-						if (rec.endPip >= 0)
+						// comment for the X/Y formula (CONFIRMED LIVE
+						// 2026-09-17 to be exact -- see that function's own
+						// comment). Its Z is NOT used here: a live log
+						// comparison the same day found Scene's own base Z
+						// sits ~0.82 units below a real tile prop's actual
+						// height (CONFIRMED via ComputeRecommendedBoardPosition()'s
+						// scene=(...) trace next to DrawWorldMarkerOnTile's
+						// own "PLAY THIS ONE!" world=(...) line for the
+						// same tick) -- Scene's coordinate is apparently a
+						// floor/anchor reference the real 3D ghost-preview
+						// OBJECT's own model geometry compensates for
+						// (mesh pivot low, mesh extends up to table
+						// height), which a flat 2D text marker never gets
+						// for free. Reusing the hand tile's own real
+						// entity Z (already resolved above, and CONFIRMED
+						// correct) sidesteps the question of what Scene's
+						// Z actually means entirely, since every tile on
+						// the table sits at the same real height.
+						if (rec.endPip >= 0 && propHandle != 0)
 						{
 							Vector3 boardPos{};
 							if (ComputeRecommendedBoardPosition(thread, static_cast<std::uint32_t>(mySeat), rec.handIndex, boardPos))
+							{
+								boardPos.z = ENTITY::GET_ENTITY_COORDS(propHandle, true, true).z;
 								DrawWorldMarkerAtPosition(boardPos, Localization::PlayHereMarker());
+							}
 						}
 					}
 				}
