@@ -389,6 +389,13 @@ buffer upstream of it). Logging goes through `Log::Write` (spdlog,
 fmt-style `{}` placeholders, compile-time checked -- never printf
 `%`-style).
 
+**Strings: `std::string_view` for read-only text.** `Localization`'s
+tables are `constexpr std::string_view` and its getters return
+`std::string_view`. Per-frame Release HUD text must not allocate: build it
+into a reused `static std::string` (`BgText`, `AppendInt`, `AppendTile`) rather than
+concatenating temporaries or using `ostringstream`. Debug-only text can keep
+`std::string`/`ostringstream`.
+
 ## Build & deploy
 
 ```

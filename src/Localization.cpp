@@ -4,6 +4,7 @@
 #include "script.h" // LANGUAGE::_GET_CURRENT_LANGUAGE_ID() (natives.h, via script.h)
 
 #include <string>
+#include <string_view>
 
 namespace
 {
@@ -15,7 +16,7 @@ namespace
 	// BlackjackCheat's HIT/STAND/DOUBLE/SPLIT table was (there's no
 	// standard "dominoes HUD command" vocabulary to check against) --
 	// fix a row directly here if a wording turns out to be wrong.
-	const char* const kBestMoveLabels[kLanguageCount] =
+	constexpr std::string_view kBestMoveLabels[kLanguageCount] =
 	{
 		"Best Move",                  // en-US
 		"Meilleur Coup",              // fr-FR
@@ -32,7 +33,7 @@ namespace
 		"最佳出牌",                     // zh-CN
 	};
 
-	const char* const kWinningMoveLabels[kLanguageCount] =
+	constexpr std::string_view kWinningMoveLabels[kLanguageCount] =
 	{
 		"Winning Move!",              // en-US
 		"Coup Gagnant !",             // fr-FR
@@ -54,7 +55,7 @@ namespace
 	// Localization.h's AmbiguousEndWarning() header comment). LLM-assisted
 	// like the other short exclamatory labels here -- fix a row directly
 	// if a wording is off for a given language.
-	const char* const kAmbiguousEndWarnings[kLanguageCount] =
+	constexpr std::string_view kAmbiguousEndWarnings[kLanguageCount] =
 	{
 		"TWO SPOTS FIT!",             // en-US
 		"DEUX EMPLACEMENTS !",        // fr-FR
@@ -77,7 +78,7 @@ namespace
 	// table -- no real glossary to verify against, grammar/tone pass
 	// only.
 	constexpr int kBlockingSafetyLabelCount = 3;
-	const char* const kBlockingSafetyLabels[kLanguageCount][kBlockingSafetyLabelCount] =
+	constexpr std::string_view kBlockingSafetyLabels[kLanguageCount][kBlockingSafetyLabelCount] =
 	{
 		{ "Safe", "Risky", "Very Risky" },                 // en-US
 		{ "Sûr", "Risqué", "Très Risqué" },                // fr-FR
@@ -96,7 +97,7 @@ namespace
 
 	// "PLAY THIS ONE!" / "WINNING MOVE!" -- world-space text drawn
 	// directly over the recommended physical tile (DrawWorldMarkerOnTile()).
-	const char* const kPlayThisTileMarkers[kLanguageCount] =
+	constexpr std::string_view kPlayThisTileMarkers[kLanguageCount] =
 	{
 		"PLAY THIS ONE!",             // en-US
 		"JOUEZ CELUI-CI !",           // fr-FR
@@ -113,7 +114,7 @@ namespace
 		"打这张！",                     // zh-CN
 	};
 
-	const char* const kWinningTileMarkers[kLanguageCount] =
+	constexpr std::string_view kWinningTileMarkers[kLanguageCount] =
 	{
 		"WINNING MOVE!",              // en-US
 		"COUP GAGNANT !",             // fr-FR
@@ -134,7 +135,7 @@ namespace
 	// POSITION to place the recommended tile on (see BoardTracker in
 	// DominoCheat.cpp), distinct from kPlayThisTileMarkers above (which
 	// marks the tile in your hand, not where it goes on the table).
-	const char* const kPlayHereMarkers[kLanguageCount] =
+	constexpr std::string_view kPlayHereMarkers[kLanguageCount] =
 	{
 		"PLAY HERE!",                 // en-US
 		"JOUEZ ICI !",                // fr-FR
@@ -152,7 +153,7 @@ namespace
 	};
 
 	// "Boneyard" -- DrawBoneyardStatus()'s own label.
-	const char* const kBoneyardWords[kLanguageCount] =
+	constexpr std::string_view kBoneyardWords[kLanguageCount] =
 	{
 		"Boneyard",                   // en-US
 		"Pioche",                     // fr-FR
@@ -237,9 +238,9 @@ namespace Localization
 		return g_current;
 	}
 
-	const char* BestMoveLabel() { return kBestMoveLabels[static_cast<int>(Current())]; }
-	const char* WinningMoveLabel() { return kWinningMoveLabels[static_cast<int>(Current())]; }
-	const char* AmbiguousEndWarning() { return kAmbiguousEndWarnings[static_cast<int>(Current())]; }
+	std::string_view BestMoveLabel() { return kBestMoveLabels[static_cast<int>(Current())]; }
+	std::string_view WinningMoveLabel() { return kWinningMoveLabels[static_cast<int>(Current())]; }
+	std::string_view AmbiguousEndWarning() { return kAmbiguousEndWarnings[static_cast<int>(Current())]; }
 
 	BlockingSafety ClassifyBlockingSafety(std::int32_t opponentRespondCount)
 	{
@@ -250,18 +251,18 @@ namespace Localization
 		return BlockingSafety::VeryRisky;
 	}
 
-	const char* BlockingSafetyLabel(BlockingSafety safety)
+	std::string_view BlockingSafetyLabel(BlockingSafety safety)
 	{
 		return kBlockingSafetyLabels[static_cast<int>(Current())][static_cast<int>(safety)];
 	}
 
-	const char* PlayThisTileMarker() { return kPlayThisTileMarkers[static_cast<int>(Current())]; }
-	const char* WinningTileMarker() { return kWinningTileMarkers[static_cast<int>(Current())]; }
-	const char* PlayHereMarker() { return kPlayHereMarkers[static_cast<int>(Current())]; }
+	std::string_view PlayThisTileMarker() { return kPlayThisTileMarkers[static_cast<int>(Current())]; }
+	std::string_view WinningTileMarker() { return kWinningTileMarkers[static_cast<int>(Current())]; }
+	std::string_view PlayHereMarker() { return kPlayHereMarkers[static_cast<int>(Current())]; }
 
-	const char* BoneyardWord() { return kBoneyardWords[static_cast<int>(Current())]; }
+	std::string_view BoneyardWord() { return kBoneyardWords[static_cast<int>(Current())]; }
 
-	const char* LanguageCode(Language lang)
+	std::string_view LanguageCode(Language lang)
 	{
 		switch (lang)
 		{

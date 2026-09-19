@@ -815,6 +815,8 @@
 #include "script.h"
 
 #include <string>
+#include <string_view>
+#include <charconv>
 #include <sstream>
 #include <cstdint>
 #include <array>
@@ -1673,6 +1675,8 @@ namespace DominoCheat
 			return written;
 		}
 
+#ifdef _DEBUG
+		// Debug-only text (the Release HUD uses AppendTile() instead).
 		std::string FormatTile(const DominoHandEval::Tile& tile)
 		{
 			if (!tile.IsValid())
@@ -1682,6 +1686,7 @@ namespace DominoCheat
 			oss << "[" << tile.low << "|" << tile.high << "]";
 			return oss.str();
 		}
+#endif
 
 		// Real 2D tile-face texture, same asset family PokerCheat's own
 		// card_set_N/BuildCardTextureName() use, replacing the plain
@@ -2268,12 +2273,46 @@ namespace DominoCheat
 		// DrawMoveSafetyStatus(), DrawWorldMarkerOnTile()) goes through
 		// this, via DrawBgText() below -- DrawLine()'s own pipeline stays
 		// exactly as it was, now Debug-only (see DrawOverlay()).
-		std::string BgText(const std::string& text, int fontSize)
+		//
+		// Builds into one reused buffer, so the per-frame HUD text does no heap
+		// allocation once its capacity has grown. The returned pointer is valid
+		// until the next call.
+		const char* BgText(std::string_view text, int fontSize)
 		{
-			std::ostringstream oss;
-			oss << "<TEXTFORMAT RIGHTMARGIN='0'><P ALIGN='Left'><FONT FACE='$Font5' LETTERSPACING='0' SIZE='"
-				<< fontSize << "'>~s~" << text << "</FONT></P><TEXTFORMAT>";
-			return oss.str();
+			static std::string buffer;
+			std::array<char, 12> digits{};
+			const auto sizeEnd = std::to_chars(digits.data(), digits.data() + digits.size(), fontSize).ptr;
+
+			buffer.assign("<TEXTFORMAT RIGHTMARGIN='0'><P ALIGN='Left'><FONT FACE='$Font5' LETTERSPACING='0' SIZE='");
+			buffer.append(digits.data(), sizeEnd);
+			buffer.append("'>~s~");
+			buffer.append(text);
+			buffer.append("</FONT></P><TEXTFORMAT>");
+			return buffer.c_str();
+		}
+
+		// Appends `value` in decimal -- the allocation-free stand-in for
+		// ostringstream in the per-frame HUD lines below.
+		void AppendInt(std::string& out, int value)
+		{
+			std::array<char, 12> digits{};
+			out.append(digits.data(), std::to_chars(digits.data(), digits.data() + digits.size(), value).ptr);
+		}
+
+		// Same "[low|high]" text as FormatTile(), appended in place.
+		void AppendTile(std::string& out, const DominoHandEval::Tile& tile)
+		{
+			if (!tile.IsValid())
+			{
+				out += "--";
+				return;
+			}
+
+			out += '[';
+			AppendInt(out, tile.low);
+			out += '|';
+			AppendInt(out, tile.high);
+			out += ']';
 		}
 
 		// Thin call-site wrapper around BgText() + the
@@ -2281,11 +2320,11 @@ namespace DominoCheat
 		// real-font draw call below uses this instead of repeating the
 		// three-line pattern Poker/BlackjackCheat's own call sites each
 		// inline separately.
-		void DrawBgText(const std::string& text, float x, float y, int fontSize, int r, int g, int b, int a = 255)
+		void DrawBgText(std::string_view text, float x, float y, int fontSize, int r, int g, int b, int a = 255)
 		{
-			std::string formatText = BgText(text, fontSize);
+			const char* formatText = BgText(text, fontSize);
 			UIDEBUG::_BG_SET_TEXT_COLOR(r, g, b, a);
-			UIDEBUG::_BG_DISPLAY_TEXT(GAMEPLAY::CREATE_STRING(10, const_cast<char*>("LITERAL_STRING"), const_cast<char*>(formatText.c_str())), x, y);
+			UIDEBUG::_BG_DISPLAY_TEXT(GAMEPLAY::CREATE_STRING(10, const_cast<char*>("LITERAL_STRING"), const_cast<char*>(formatText)), x, y);
 		}
 
 #ifndef _DEBUG
@@ -2336,7 +2375,7 @@ namespace DominoCheat
 		// Shared by DrawWorldMarkerOnTile() (a physical prop's live
 		// position) and DrawOverlay()'s own board-marker block (a
 		// computed position, see ComputeRecommendedBoardPosition()).
-		void DrawWorldMarkerAtPosition(const Vector3& coords, const char* text)
+		void DrawWorldMarkerAtPosition(const Vector3& coords, std::string_view text)
 		{
 			float screenX = 0.0f, screenY = 0.0f;
 			bool projected = GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_COORD(coords.x, coords.y, coords.z, &screenX, &screenY);
@@ -2388,7 +2427,7 @@ namespace DominoCheat
 					else
 						Log::Write("Trace: DrawWorldMarkerAtPosition \"{}\" world=({:.4f},{:.4f},{:.4f}) -- GET_SCREEN_COORD_FROM_WORLD_COORD failed (off-screen/behind camera/invalid position)",
 							text, coords.x, coords.y, coords.z);
-					last = LastLogged{ text, projected, now_time, true };
+					last = LastLogged{ std::string(text), projected, now_time, true };
 				}
 			}
 #endif
@@ -2411,7 +2450,7 @@ namespace DominoCheat
 
 		// Draws `text` directly over tile `rawTileIndex`'s real 3D prop
 		// (GetTilePropHandle(), see that function's own header comment).
-		void DrawWorldMarkerOnTile(rage::scrThread* thread, std::int32_t rawTileIndex, const char* text)
+		void DrawWorldMarkerOnTile(rage::scrThread* thread, std::int32_t rawTileIndex, std::string_view text)
 		{
 			std::int32_t handle = GetTilePropHandle(thread, rawTileIndex);
 			if (handle == 0 || !ENTITY::DOES_ENTITY_EXIST(handle))
@@ -2610,9 +2649,12 @@ namespace DominoCheat
 			float iconHeight = kReleaseBoneyardTileIconHeight;
 #endif
 
-			std::ostringstream label;
-			label << Localization::BoneyardWord() << " (" << remaining << "):";
-			DrawBgText(label.str(), x, y, 20, 200, 220, 255);
+			static std::string label;
+			label.assign(Localization::BoneyardWord());
+			label += " (";
+			AppendInt(label, remaining);
+			label += "):";
+			DrawBgText(label, x, y, 20, 200, 220, 255);
 
 			float iconX = x + labelOffsetX;
 			for (std::int32_t i = deckCursor; i < static_cast<std::int32_t>(kTileSetSize); i++)
@@ -2649,24 +2691,39 @@ namespace DominoCheat
 			float x = kReleaseMoveAdviceX;
 			float y = kReleaseMoveAdviceY;
 #endif
-			const char* headline = rec.isWinningMove ? Localization::WinningMoveLabel() : Localization::BestMoveLabel();
+			const std::string_view headline = rec.isWinningMove ? Localization::WinningMoveLabel() : Localization::BestMoveLabel();
 			int r = rec.isWinningMove ? 255 : 140, g = rec.isWinningMove ? 220 : 255, b = rec.isWinningMove ? 120 : 140;
 
-			std::ostringstream line;
-			line << headline << ": " << FormatTile(rec.tile);
+			static std::string line;
+			line.assign(headline);
+			line += ": ";
+			AppendTile(line, rec.tile);
 			// "on end N" rather than a bare "(N -> M)" -- a live loss (see
 			// MoveRecommendation::hasAlternateEnd's own comment) showed the
 			// terse arrow notation wasn't unambiguous enough about which
 			// physical end N actually names when the tile fits two.
 			if (!rec.isWinningMove && rec.endPip >= 0)
-				line << " on end " << rec.endPip << " (-> " << rec.resultPip << ")";
+			{
+				line += " on end ";
+				AppendInt(line, rec.endPip);
+				line += " (-> ";
+				AppendInt(line, rec.resultPip);
+				line += ')';
+			}
 			// Net points for the recommended line, in the game's own
 			// payout (see DominoSearch.h): "+12" = I win the round by 12,
 			// "-8" = the winner is paid 8. A "~" prefix means the search
 			// hit its horizon and this is an estimate, not the solved
 			// round. Digits only, so no localization needed.
 			if (!rec.isWinningMove)
-				line << "  " << (rec.exact ? "" : "~") << (rec.points >= 0 ? "+" : "") << rec.points;
+			{
+				line += "  ";
+				if (!rec.exact)
+					line += '~';
+				if (rec.points >= 0)
+					line += '+';
+				AppendInt(line, rec.points);
+			}
 
 			// This tile fits a DIFFERENT open end too -- override the
 			// normal color with a warning one and spell out both end
@@ -2675,11 +2732,15 @@ namespace DominoCheat
 			// loss live: same recommended tile, wrong end played.
 			if (rec.hasAlternateEnd)
 			{
-				line << "  " << Localization::AmbiguousEndWarning() << " (" << rec.alternateEndPip << ")";
+				line += "  ";
+				line += Localization::AmbiguousEndWarning();
+				line += " (";
+				AppendInt(line, rec.alternateEndPip);
+				line += ')';
 				r = 255; g = 90; b = 60;
 			}
 
-			DrawBgText(line.str(), x, y, 40, r, g, b);
+			DrawBgText(line, x, y, 40, r, g, b);
 		}
 
 		// Position-verdict qualifier, drawn just below DrawMoveAdviceStatus()

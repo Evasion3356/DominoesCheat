@@ -43,6 +43,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 namespace Localization
 {
@@ -92,11 +93,11 @@ namespace Localization
 
 	// Headline for a legal-but-not-winning move recommendation. Uses
 	// Current() for the language.
-	const char* BestMoveLabel();
+	std::string_view BestMoveLabel();
 
 	// Headline when the recommended move empties your hand outright.
 	// Uses Current() for the language.
-	const char* WinningMoveLabel();
+	std::string_view WinningMoveLabel();
 
 	// Warning appended to the move-advice line (see DrawMoveAdviceStatus())
 	// when the recommended tile ALSO legally fits a DIFFERENT open end than
@@ -105,7 +106,7 @@ namespace Localization
 	// silently threw away a proven win. The specific end numbers are drawn
 	// separately as plain digits (no localization needed there); this is
 	// just the short attention-grabbing phrase.
-	const char* AmbiguousEndWarning();
+	std::string_view AmbiguousEndWarning();
 
 	// This mod's own invented "how safely can opponents answer this"
 	// qualifier -- Safe (DetermineBestMove()'s opponentRespondCount == 0,
@@ -123,27 +124,27 @@ namespace Localization
 	// count-based mapping, kept for reference.
 	enum class BlockingSafety { Safe, Risky, VeryRisky };
 	BlockingSafety ClassifyBlockingSafety(std::int32_t opponentRespondCount);
-	const char* BlockingSafetyLabel(BlockingSafety safety);
+	std::string_view BlockingSafetyLabel(BlockingSafety safety);
 
 	// World-space text drawn directly over the recommended physical tile
 	// (see DrawWorldMarkerOnTile()) -- distinct from BestMoveLabel()/
 	// WinningMoveLabel() above (those head the standalone centered
 	// readout; these sit on the 3D tile itself, so they're phrased as a
 	// short imperative/exclamation instead of a label).
-	const char* PlayThisTileMarker();
-	const char* WinningTileMarker();
+	std::string_view PlayThisTileMarker();
+	std::string_view WinningTileMarker();
 
 	// World-space text drawn over the physical BOARD POSITION to place
 	// the recommended tile on (see BoardTracker/GetPropForOpenPip() in
 	// DominoCheat.cpp) -- added 2026-09-16 alongside that tracker,
 	// specifically because PlayThisTileMarker() only ever points at the
 	// tile in your OWN hand, never at where on the table it goes.
-	const char* PlayHereMarker();
+	std::string_view PlayHereMarker();
 
 	// Boneyard readout label (DrawBoneyardStatus()).
-	const char* BoneyardWord();
+	std::string_view BoneyardWord();
 
 	// Short language code ("en-US", "fr-FR", ...) for a given language --
 	// purely for logging, not used by anything Release-facing.
-	const char* LanguageCode(Language lang);
+	std::string_view LanguageCode(Language lang);
 }
