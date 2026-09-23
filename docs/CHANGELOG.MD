@@ -1,5 +1,30 @@
 # DominoCheat Changelog
 
+## [1.2.0] - 2026-09-23
+
+### Fixed
+
+- Move advice is no longer built on the wrong board when the mod misses
+  one of the open ends (seen right after a double is played onto an open
+  end). A missed double's end is now added automatically; any other
+  disagreement with the game's own list of playable tiles shows no advice
+  for that turn instead of wrong advice.
+- The game can no longer hang on exit while the move advisor is working,
+  and ejecting the mod no longer stalls for half a second.
+- The log is no longer silently lost when the game folder isn't writable.
+- If the game folder can't be written (e.g. a `C:\Program Files` install,
+  or a read-only/locked log file), the log now goes to
+  `%LOCALAPPDATA%\RDR2ASIMods\DominoCheat.log` instead, and its first line
+  names the path that couldn't be used.
+- Loads reliably even when an ASI loader injects the mod before RDR2 has
+  finished unpacking itself. Startup work moved out of the DLL's load
+  callback, and a failed memory scan is retried instead of leaving the mod
+  inactive for the whole session.
+
+### Changed
+
+- The Release HUD no longer allocates memory every frame.
+
 ## [1.1.0] - 2026-09-17
 
 ### Added
