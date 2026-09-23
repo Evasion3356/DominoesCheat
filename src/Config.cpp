@@ -4,6 +4,7 @@
 
 #include "Config.h"
 #include "Log.h"
+#include "LogFallback.h"
 
 #include "..\external\inipp\inipp\inipp.h"
 
@@ -21,26 +22,15 @@ namespace
 	Config::Values g_values;
 	bool g_loaded = false;
 
-	const std::wstring& ResolveIniPath()
+	// Where DominoCheat.ini is loaded from and saved to: next to the .asi, or
+	// %LOCALAPPDATA%\RDR2ASIMods\DominoCheat.ini when the game folder isn't
+	// writable -- starting from the game folder's copy if there is one (see
+	// LogFallback::ResolveSettings). Resolved once per session.
+	const LogFallback::SettingsPaths& IniPaths()
 	{
-		static const std::wstring path = []() -> std::wstring
-		{
-			HMODULE hModule = nullptr;
-			GetModuleHandleExA(
-				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-				reinterpret_cast<LPCSTR>(&ResolveIniPath),
-				&hModule);
-
-			wchar_t modulePath[MAX_PATH] = {};
-			GetModuleFileNameW(hModule, modulePath, MAX_PATH);
-
-			wchar_t drive[_MAX_DRIVE], dir[_MAX_DIR];
-			_wsplitpath_s(modulePath, drive, _MAX_DRIVE, dir, _MAX_DIR, nullptr, 0, nullptr, 0);
-
-			return std::wstring(drive) + dir + L"DominoCheat.ini";
-		}();
-
-		return path;
+		static const LogFallback::SettingsPaths paths = LogFallback::ResolveSettings(
+			LogFallback::ModuleDirectory(), L"DominoCheat.ini", LogFallback::FallbackDirectory());
+		return paths;
 	}
 
 	std::string NarrowPath(const std::wstring& wide)
@@ -82,7 +72,7 @@ namespace
 	{
 		inipp::Ini<char> ini;
 		{
-			std::ifstream is(ResolveIniPath());
+			std::ifstream is(IniPaths().read);
 			if (is)
 				ini.parse(is);
 		}
@@ -162,16 +152,20 @@ namespace
 		SetFloat(hud, "MoveAdviceY", g_values.MoveAdviceY);
 #endif
 
+		if (IniPaths().usedFallback)
+			Log::Write("Config::Reload -- the game folder isn't writable, so settings are saved to {}",
+				LogFallback::ToUtf8(IniPaths().write));
+
 		{
-			std::ofstream os(ResolveIniPath(), std::ios::trunc);
+			std::ofstream os(IniPaths().write, std::ios::trunc);
 			if (os)
 				ini.generate(os);
 			else
-				Log::Write("Config::Reload -- failed to open {} for writing", NarrowPath(ResolveIniPath()));
+				Log::Write("Config::Reload -- failed to open {} for writing", NarrowPath(IniPaths().write));
 		}
 
 		Log::Write("Config::Reload -- loaded from {} (ShowOpponentHands={} ShowBoneyard={} AdvisorWallClockBudgetMs={})",
-			NarrowPath(ResolveIniPath()), g_values.ShowOpponentHands, g_values.ShowBoneyard,
+			NarrowPath(IniPaths().read), g_values.ShowOpponentHands, g_values.ShowBoneyard,
 			g_values.AdvisorWallClockBudgetMs);
 	}
 }
