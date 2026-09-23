@@ -96,7 +96,10 @@
 		Safe -- nothing here is running under the loader lock -- and
 		necessary, since the worker must be fully stopped before this
 		object's members are destroyed.
-	  - g_processDetaching == true: a BOUNDED WaitForSingleObject
+	  - g_processTerminating == true (process exit, not an eject): does
+		nothing at all -- see that flag's own comment.
+	  - g_processDetaching == true: a BOUNDED WaitForSingleObject on
+		m_workerExited, an event the worker sets as its last action
 		(kProcessDetachWaitTimeout, never INFINITE) instead -- waiting
 		unbounded here can deadlock against our own DllMain (see above).
 		This still gives the worker a real chance to actually finish for
@@ -149,6 +152,14 @@ namespace AsyncMoveAdvisorDetail
 	// own header comment for why the destructor needs to know.
 	inline std::atomic<bool> g_processDetaching{ false };
 
+	// Set by main.cpp's DllMain when DLL_PROCESS_DETACH comes from process
+	// EXIT (non-null lpReserved), not an eject. By then Windows has already
+	// killed every other thread -- possibly the worker while it held
+	// m_jobMutex, in which case RequestStop() would block forever and hang
+	// the game on exit. The destructor does nothing at all in that case:
+	// the process's memory and handles are going away regardless.
+	inline std::atomic<bool> g_processTerminating{ false };
+
 	// Test-only instrumentation (tests/DominoHandEvalTests.cpp): counts
 	// currently-running worker threads across every AsyncMoveAdvisor
 	// instance in the process. Incremented at the top of WorkerLoop(),
@@ -187,7 +198,9 @@ public:
 	// non-static member function can't match LPTHREAD_START_ROUTINE's
 	// plain DWORD WINAPI(LPVOID) signature) that casts lpParam back to
 	// this instance and calls the real WorkerLoop().
-	AsyncMoveAdvisor() : m_worker(::CreateThread(nullptr, 0, &AsyncMoveAdvisor::ThreadEntry, this, 0, nullptr)) {}
+	AsyncMoveAdvisor()
+		: m_workerExited(::CreateEventW(nullptr, TRUE, FALSE, nullptr)),
+		  m_worker(::CreateThread(nullptr, 0, &AsyncMoveAdvisor::ThreadEntry, this, 0, nullptr)) {}
 
 	// Signals the worker to stop (sets m_shuttingDown, bumps the
 	// generation so any in-flight Search() aborts on its very next node
@@ -214,9 +227,16 @@ public:
 
 	~AsyncMoveAdvisor()
 	{
+		if (AsyncMoveAdvisorDetail::g_processTerminating.load())
+			return; // see g_processTerminating -- touching the mutex here can hang process exit
+
 		RequestStop();
 		if (!m_worker)
+		{
+			if (m_workerExited)
+				::CloseHandle(m_workerExited);
 			return;
+		}
 		if (AsyncMoveAdvisorDetail::g_processDetaching.load())
 		{
 			// WaitForSingleObject-ing on this thread's own HANDLE from
@@ -228,7 +248,16 @@ public:
 			// bounded timeout keeps this exactly as safe as an immediate
 			// abandon against the DllMain deadlock risk: it can never
 			// block forever, only time out.
-			::WaitForSingleObject(m_worker, static_cast<DWORD>(AsyncMoveAdvisorDetail::kProcessDetachWaitTimeout.count()));
+			//
+			// Waits on m_workerExited, NOT the thread handle: a thread
+			// handle only signals once the thread has fully exited, and
+			// thread exit needs the loader lock this DllMain path is
+			// holding -- so waiting on the handle here always ran out the
+			// whole timeout. The worker sets m_workerExited as its very
+			// last action, after which it runs no more of this module's
+			// code that matters, so that's what actually needs waiting for.
+			::WaitForSingleObject(m_workerExited ? m_workerExited : m_worker,
+				static_cast<DWORD>(AsyncMoveAdvisorDetail::kProcessDetachWaitTimeout.count()));
 			// Always close the handle here, whether the wait succeeded
 			// or timed out -- CloseHandle() never blocks on the thread
 			// itself finishing, it just releases OUR reference to it, so
@@ -245,6 +274,8 @@ public:
 			::WaitForSingleObject(m_worker, INFINITE);
 			::CloseHandle(m_worker);
 		}
+		if (m_workerExited)
+			::CloseHandle(m_workerExited);
 	}
 
 	// Test-only (tests/DominoHandEvalTests.cpp): makes the worker sleep
@@ -314,7 +345,11 @@ private:
 	// CreateThread cannot bind to a non-static member function directly).
 	static DWORD WINAPI ThreadEntry(LPVOID param)
 	{
-		static_cast<AsyncMoveAdvisor*>(param)->WorkerLoop();
+		auto* self = static_cast<AsyncMoveAdvisor*>(param);
+		self->WorkerLoop();
+		// Last touch of this object -- see the destructor's detach path.
+		if (self->m_workerExited)
+			::SetEvent(self->m_workerExited);
 		return 0;
 	}
 
@@ -393,6 +428,10 @@ private:
 
 	// Test-only, see Testing_SetArtificialJobDelay(). Milliseconds, 0 = off.
 	std::atomic<long long> m_testDelayMs{ 0 };
+
+	// Manual-reset event the worker sets on its way out (see ThreadEntry).
+	// Declared before m_worker so it exists before the thread starts.
+	HANDLE m_workerExited;
 
 	// Declared LAST: its constructor starts running WorkerLoop()
 	// immediately on another thread, which touches every member above --

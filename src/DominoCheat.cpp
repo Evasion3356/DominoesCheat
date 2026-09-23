@@ -2135,6 +2135,63 @@ namespace DominoCheat
 				CancelMoveAdvice();
 				return best;
 			}
+			// Cross-check DetermineOpenEnds()'s synthetic-double probe against
+			// the game's own move list for my REAL hand. The probe has been
+			// seen live to miss an open end (pip 4 right after [4|4] was
+			// played -- see that function's verboseLog comment), and a
+			// missed end means searching the wrong board: legal moves
+			// dropped, opponents modeled wrong, hasAlternateEnd silent.
+			// Every native candidate's tile must touch at least one detected
+			// end. A double that doesn't pins its pip exactly, so it's added;
+			// anything else is ambiguous (either pip could be the missed
+			// one), so no advice is shown rather than advice on a bad model.
+			{
+				auto isDetected = [&](std::int32_t pip)
+				{
+					for (std::uint32_t ei = 0; ei < endCount; ei++)
+						if (ends[ei] == pip)
+							return true;
+					return false;
+				};
+
+				// No detected ends is normal on the opening move (every tile
+				// is a candidate). Only treat it as a miss if tiles are
+				// already on the board.
+				const bool boardHasTiles = endCount > 0 || FindAnyBoardOwnedTilePropHandle(thread) != 0;
+				std::array<DominoAiPolicy::Candidate, kCandidateCapacity> nativeMoves{};
+				const std::uint32_t nativeCount = boardHasTiles
+					? QueryNativeCandidates(thread, mySeatU, nativeMoves.data(), static_cast<std::uint32_t>(nativeMoves.size()))
+					: 0;
+
+				static bool s_loggedInconsistent = false;
+				bool inconsistent = false;
+				for (std::uint32_t i = 0; i < nativeCount && !inconsistent; i++)
+				{
+					const DominoAiPolicy::Candidate& c = nativeMoves[i];
+					if (!c.hasPlacement || c.handIndex < 0 || c.handIndex >= state.handCounts[mySeatU])
+						continue;
+					const DominoHandEval::Tile& tile = state.hands[mySeatU][static_cast<std::size_t>(c.handIndex)];
+					if (isDetected(tile.low) || isDetected(tile.high))
+						continue;
+					if (tile.low == tile.high && endCount < ends.size())
+					{
+						ends[endCount++] = tile.low;
+						Log::Write("DetermineBestMove: open-end probe missed pip {} -- the game lists [{}|{}] as playable; added it", tile.low, tile.low, tile.high);
+						continue;
+					}
+					inconsistent = true;
+					if (!s_loggedInconsistent)
+						Log::Write("DetermineBestMove: open-end probe disagrees with the game (it lists [{}|{}] as playable, but neither pip is a detected open end) -- no advice for this decision",
+							tile.low, tile.high);
+				}
+				s_loggedInconsistent = inconsistent;
+				if (inconsistent)
+				{
+					CancelMoveAdvice();
+					return best;
+				}
+			}
+
 			for (std::uint32_t ei = 0; ei < endCount; ei++)
 				state.ends.pips[static_cast<std::size_t>(state.ends.count++)] = ends[ei];
 

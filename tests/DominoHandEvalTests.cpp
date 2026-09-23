@@ -1116,6 +1116,34 @@ namespace
 		Check(elapsed < AsyncMoveAdvisorDetail::kProcessDetachWaitTimeout + std::chrono::milliseconds(200), "process-detaching teardown's wait is still bounded, not indefinite", "a regression back to join() here would block for the job's full ~800ms (or hang outright under real DllMain) instead of stopping at the timeout");
 		Check(WaitForLiveWorkerCount(0, std::chrono::seconds(2)), "the detached worker still exits cleanly on its own once its job finally finishes", "expected g_liveWorkerCount back to 0 within 2s even though the destructor gave up waiting");
 	}
+
+	// Process EXIT (g_processTerminating, set by DllMain when lpReserved is
+	// non-null): Windows has already killed the worker, possibly while it
+	// held the job mutex, so the destructor must not lock or wait at all --
+	// returning immediately even with a job in flight is the point. Must run
+	// LAST: the worker here is deliberately never stopped, so
+	// g_liveWorkerCount stays at 1 for the rest of the process.
+	void TestAsyncAdvisorProcessExitReturnsImmediately()
+	{
+		using Advisor = AsyncMoveAdvisor<int>;
+		static alignas(Advisor) std::byte storage[sizeof(Advisor)];
+		Advisor* advisor = new (&storage) Advisor();
+
+		Check(WaitForLiveWorkerCount(1, std::chrono::seconds(2)), "TestAsyncAdvisorProcessExitReturnsImmediately: worker starts", "g_liveWorkerCount never reached 1");
+
+		advisor->Testing_SetArtificialJobDelay(std::chrono::milliseconds(800));
+		GameState state = TwoSeatState({ Tile{5,5} }, { Tile{0,1}, Tile{2,3} }, { 5 });
+		advisor->SubmitJob(1, state, 0, 1);
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+		AsyncMoveAdvisorDetail::g_processTerminating.store(true);
+		auto start = std::chrono::steady_clock::now();
+		advisor->~Advisor();
+		auto elapsed = std::chrono::steady_clock::now() - start;
+		AsyncMoveAdvisorDetail::g_processTerminating.store(false);
+
+		Check(elapsed < std::chrono::milliseconds(50), "process-exit teardown returns immediately without locking or waiting", "a wait here can hang game exit if the killed worker held the job mutex");
+	}
 }
 
 int main()
@@ -1149,6 +1177,7 @@ int main()
 	TestAsyncAdvisorJoinsSynchronouslyOnNormalTeardown();
 	TestAsyncAdvisorProcessDetachWaitCompletesForQuickJob();
 	TestAsyncAdvisorProcessDetachTimesOutThenDetachesForSlowJob();
+	TestAsyncAdvisorProcessExitReturnsImmediately();
 
 	if (g_failures == 0)
 	{

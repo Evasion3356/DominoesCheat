@@ -1,9 +1,7 @@
 /*
 	Entry point. Registers ScriptMain as a ScriptHookRDR2 script thread and
-	wires up the keyboard handler. Vendored unchanged from PokerCheat/
-	BlackjackCheat's own main.cpp -- see either project's header comment for
-	why Config::Reload()/GamePointers::GetScriptThreads() run here (from
-	DllMain) rather than lazily from ScriptMain's fiber.
+	wires up the keyboard handler, same pattern as PokerCheat/BlackjackCheat's
+	own main.cpp.
 */
 
 // AsyncMoveAdvisor.h (via DominoSearch.h) uses std::min/std::max -- must be
@@ -16,8 +14,6 @@
 #include "..\external\ScriptHookSDK\inc\main.h"
 #include "script.h"
 #include "keyboard.h"
-#include "Config.h"
-#include "GamePointers.h"
 #include "DominoCheat.h"
 
 BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
@@ -25,9 +21,10 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 	switch (reason)
 	{
 	case DLL_PROCESS_ATTACH:
-		Config::Reload();
-		GamePointers::GetScriptThreads();
-
+		// Registration only -- Config::Reload() and the scrThread-pool scan
+		// run first thing in ScriptMain instead (see script.cpp): DllMain
+		// holds the loader lock and, with an early ASI loader, can run before
+		// RDR2.exe has finished unpacking.
 		scriptRegister(hInstance, ScriptMain);
 #ifdef _DEBUG
 		// Release has no menu to drive with keystrokes at all (see
@@ -36,7 +33,16 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 #endif
 		break;
 	case DLL_PROCESS_DETACH:
-		// Must be set before anything else in this case -- it's read by
+		// Process exit (non-null lpReserved): every other thread is already
+		// dead, possibly the advisor worker while holding its mutex. Only
+		// flag it -- the advisor's destructor, which the CRT still runs after
+		// this, then skips all locking and waiting (see AsyncMoveAdvisor.h).
+		if (lpReserved)
+		{
+			AsyncMoveAdvisorDetail::g_processTerminating.store(true);
+			break;
+		}
+		// Must be set before the rest of this case -- it's read by
 		// AsyncMoveAdvisor's destructor (see AsyncMoveAdvisor.h's own
 		// header comment) when DetermineBestMove()'s function-local
 		// static advisor is torn down later, as part of the CRT's

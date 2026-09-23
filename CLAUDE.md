@@ -424,9 +424,24 @@ as PokerCheat/BlackjackCheat.
 BlackjackCheat (F11), and this mod (F12) can all be loaded into the game
 at once without a key collision.
 
-Runtime log: `<game folder>\DominoCheat.log`, written by `Log::Write`.
+Runtime log: `<game folder>\DominoCheat.log` -- or
+`%LOCALAPPDATA%\RDR2ASIMods\DominoCheat.log` when the game folder isn't
+writable (e.g. a C:\Program Files install; the file's first line then names
+the rejected path). See `src/LogFallback.h`, vendored identically into every
+sibling project.
 
 ## Tests
+
+`tests/LogFallbackTests.vcxproj` checks that logging falls back to
+`%LOCALAPPDATA%\RDR2ASIMods\` instead of throwing when the game folder can't
+be written (it points the logger at `C:\Windows\System32` -- skipped when run
+elevated -- and at a path through a regular file). Same test, vendored into
+every sibling project:
+
+```
+"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" tests\LogFallbackTests.vcxproj /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal
+bin\Debug\LogFallbackTests.exe
+```
 
 `tests/DominoHandEvalTests.vcxproj` unit-tests `src/DominoHandEval.h`
 (the tile decode table + pip scoring) AND `src/DominoSearch.h` (the
@@ -688,7 +703,7 @@ superseded node-capped worker.
 
 ## External resources
 
-- `D:\Backup\Stuff\RDR2 Shit\Scripts\rdr2-scripts-decompiled\1491.50\script_rel\dominoes_sp.ysc.c`
+- `D:\Backup\Stuff\RDR2 Shit\Scripts\1491.50\script_rel\dominoes_sp.ysc.c`
   -- the actual target, already decompiled for our exact game build
   (1491.50), ~34.7k lines. `act_gen_dominoes.ysc.c` (~41.9k lines) is
   likely the shared generic card/tile-game engine (same

@@ -15,6 +15,7 @@
 #include "Log.h"
 #include "DominoCheat.h"
 #include "Config.h"
+#include "GamePointers.h"
 
 namespace
 {
@@ -40,7 +41,9 @@ void ScriptMain()
 {
 	Log::Write("DominoCheat started");
 
-	// Config is loaded from DllMain now, not here -- see main.cpp.
+	// Startup work that used to live in DllMain -- see main.cpp for why.
+	Config::Reload();
+	GamePointers::GetScriptThreads();
 
 #ifdef _DEBUG
 	BuildMenu();
