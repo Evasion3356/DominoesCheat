@@ -407,7 +407,7 @@ The project's `PostBuildEvent` auto-locates the RDR2 install directory
 sibling project, since each is its own separate git repo) and copies the
 built `.asi` straight into it, on every build regardless
 of whether the build itself was up to date. `DisableFastUpToDateCheck` is
-set in the `.vcxproj.user` so this also holds for Visual Studio IDE
+set in the tracked `.vcxproj` so this also holds for Visual Studio IDE
 builds, not just command-line MSBuild. **RDR2.exe must be closed first**
 or the copy fails with a file-in-use error -- check
 `tasklist //FI "IMAGENAME eq RDR2.exe"` before every build.
