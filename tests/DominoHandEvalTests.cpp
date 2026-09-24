@@ -819,6 +819,9 @@ namespace
 			Config::ClampWallClockBudgetMs(5) == 50 &&
 			Config::ClampWallClockBudgetMs(1000000) == 30000,
 			"raw INI budget is clamped to a sane [50, 30000] ms range", "clamp bounds mismatch");
+		Check(Config::ClampWallClockBudgetMs(0) == Config::kUnlimitedWallClockBudgetMs &&
+			Config::ClampWallClockBudgetMs(-1) == Config::kUnlimitedWallClockBudgetMs,
+			"zero/negative INI budget means unlimited", "unlimited budget clamped to a finite value");
 	}
 
 	void TestTimedSearchStopsAtCompletedDepth()
@@ -939,6 +942,26 @@ namespace
 			"fresh decision preempts five-second search promptly", "worker waited for stale job's full runtime");
 		advisor.Cancel();
 		Check(!advisor.GetLatest().valid, "turn cancellation clears published advice", "stale advice survived turn end");
+	}
+
+	void TestWorkerUnlimitedRuntime()
+	{
+		AsyncMoveAdvisor<int> advisor;
+		GameState state = BusySearchState();
+		// A zero budget must not act as an already-expired deadline (which
+		// would finish instantly at completedDepth 0): the worker keeps
+		// deepening until solved or cancelled.
+		advisor.SubmitJob(1, state, 0, 100, std::chrono::milliseconds(Config::kUnlimitedWallClockBudgetMs));
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		auto latest = advisor.GetLatest();
+		Check(latest.valid && latest.key == 1 && latest.rec.completedDepth > 0,
+			"unlimited budget keeps deepening instead of expiring immediately", "zero budget treated as expired deadline");
+		GameState next = TwoSeatState({ Tile{5,5} }, { Tile{0,1}, Tile{2,3} }, { 5 });
+		advisor.SubmitJob(2, next, 0, 4, std::chrono::milliseconds(Config::kUnlimitedWallClockBudgetMs));
+		Check(WaitForFinished(advisor, 2, std::chrono::seconds(1)) && advisor.GetLatest().rec.isWinningMove,
+			"new decision preempts an unlimited search", "unlimited search ignored cancellation");
+		advisor.Cancel();
+		Check(!advisor.GetLatest().valid, "cancel clears unlimited-search advice", "stale advice survived cancel");
 	}
 
 	// AsyncMoveAdvisor.h sanity check -- added alongside DetermineBestMove()'s
@@ -1173,6 +1196,7 @@ int main()
 	TestTimedSearchStopsAtCompletedDepth();
 	TestWorkerDeduplicatesAndCancels();
 	TestWorkerTimedRuntimeAndPreemption();
+	TestWorkerUnlimitedRuntime();
 	TestAsyncAdvisorPublishesMatchingResult();
 	TestAsyncAdvisorJoinsSynchronouslyOnNormalTeardown();
 	TestAsyncAdvisorProcessDetachWaitCompletesForQuickJob();

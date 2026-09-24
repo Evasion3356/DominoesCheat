@@ -21,12 +21,21 @@
 
 namespace Config
 {
+	// [Advisor] WallClockBudget=0 (or any negative value): no deadline --
+	// the worker deepens until the position is solved or the decision is
+	// cancelled (turn end, table exit, position change). Safe because the
+	// search never runs on the game thread; the only cost is one core busy
+	// for as long as the decision window stays open.
+	constexpr int kUnlimitedWallClockBudgetMs = 0;
+
 	// Sanity clamp for a raw [Advisor] WallClockBudget INI value -- guards
-	// against a 0/negative/absurd typo, not a curated preset list. 50ms is
-	// low enough to still be a deliberate choice; 30000ms (30s) is far
-	// beyond any real decision-window use.
+	// against an absurd typo, not a curated preset list. 50ms is low
+	// enough to still be a deliberate choice; 30000ms (30s) is far beyond
+	// any real decision-window use. <= 0 means unlimited (see above).
 	inline int ClampWallClockBudgetMs(int value)
 	{
+		if (value <= 0)
+			return kUnlimitedWallClockBudgetMs;
 		if (value < 50)
 			return 50;
 		if (value > 30000)
@@ -38,7 +47,8 @@ namespace Config
 	{
 		// Wall-clock allowance per decision (milliseconds), used only by
 		// the background move-search worker. Self-describing INI key --
-		// [Advisor] WallClockBudget=1000 -- no preset name lookup.
+		// [Advisor] WallClockBudget=1000 -- no preset name lookup. 0 =
+		// unlimited (kUnlimitedWallClockBudgetMs).
 		int AdvisorWallClockBudgetMs = 1000;
 
 		// Reveal every occupied opponent seat's real hand (the actual

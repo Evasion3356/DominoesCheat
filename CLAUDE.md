@@ -658,16 +658,16 @@ first move and is exact later in the round.
 
 ## Advisor runtime
 
-`DominoCheat.ini`, next to the ASI, now has an `[Advisor]` section with
-`Runtime=Medium`. Supported presets are case-insensitive:
-
-| Runtime | Maximum wall-clock allowance per decision |
-| --- | --- |
-| Low | 250 ms |
-| Medium (default) | 1000 ms |
-| High | 5000 ms |
-
-Missing or invalid values normalize to Medium. Use the Debug F12 menu's
+`DominoCheat.ini`, next to the ASI, has an `[Advisor]` section with
+`WallClockBudget=1000` -- the maximum wall-clock allowance per decision
+in milliseconds (the earlier Low/Medium/High preset names are gone).
+Values are clamped to [50, 30000]; `0` (or any negative value) means
+unlimited -- no deadline, the worker deepens until the position is
+solved or the decision is cancelled. That's safe because the search never
+touches the game thread; the cost is one core busy for as long as the
+decision window stays open, which matters mainly for 4-seat All
+Fives/Threes tables (paranoid search, not solved at the first move).
+Use the Debug F12 menu's
 Reload Config action after editing; Release loads settings when the mod
 loads (restart/reload the mod to apply edits).
 

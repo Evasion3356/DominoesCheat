@@ -1,5 +1,6 @@
 /*
-	Current scheduling: configurable wall-clock runtime, progressive
+	Current scheduling: configurable wall-clock runtime (<= 0 = no
+	deadline, run until solved or cancelled), progressive
 	completed-depth publication, and generation cancellation. Identical
 	pending/running/completed jobs are deduplicated. Production no longer
 	uses the historical node cap mentioned in the original incident notes
@@ -399,12 +400,15 @@ private:
 				m_latest.rec = rec;
 			};
 			DominoSearch::SearchControl control;
-			control.deadline = std::chrono::steady_clock::now() + runtime;
+			// runtime <= 0 is Config's "unlimited" budget: leave the
+			// default time_point::max() deadline in place.
+			if (runtime.count() > 0)
+				control.deadline = std::chrono::steady_clock::now() + runtime;
 			control.generation = &m_generation;
 			control.expectedGeneration = generation;
 			control.publish = [&publish](const DominoSearch::Recommendation& rec) { publish(rec, false); };
-			// No inherited node cap: only the deadline, cancellation, or a
-			// solved position ends production evaluation.
+			// No inherited node cap: only the deadline (if any),
+			// cancellation, or a solved position ends production evaluation.
 			auto rec = DominoSearch::FindBestMove(state, seat, depth, -1, &control);
 			publish(rec, true);
 		}

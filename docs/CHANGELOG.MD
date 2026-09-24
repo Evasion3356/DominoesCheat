@@ -1,5 +1,15 @@
 # DominoCheat Changelog
 
+## [Unreleased]
+
+### Added
+
+- `[Advisor] WallClockBudget=0` now means unlimited: the move advisor keeps
+  refining its advice until the position is solved or your turn ends,
+  instead of stopping at a fixed time. It runs on its own thread, so the
+  game never waits on it, but it keeps one CPU core busy while you think.
+  Previously 0 was raised to the 50 ms minimum.
+
 ## [1.2.0] - 2026-09-23
 
 ### Fixed
