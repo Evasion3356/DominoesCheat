@@ -1697,8 +1697,10 @@ namespace DominoCheat
 			int decisionHitches = 0; // frames over kFrameHitchMs during the decision window
 
 			// Game record (GameRecorder below): the round in progress,
-			// written as a round line at the next deal.
+			// written as a round line at the next deal, or with the last
+			// scores seen when the table's script thread goes away.
 			bool roundValid = false;
+			std::array<std::int32_t, kMaxSeats> roundLastScores{}; // refreshed every tick
 			std::int32_t roundMySeat = -1;
 			DominoAiPolicy::Rules roundRules = DominoAiPolicy::Rules::Unknown;
 			std::array<bool, kMaxSeats> roundOccupied{};
@@ -3623,23 +3625,12 @@ namespace DominoCheat
 				occupiedCount <= 2 ? " (2-seat table: trivially alternates, sit with 2+ opponents to really test this)" : "");
 		}
 
-		// New deal detected: everything a player can compare against the
-		// screen at the start of a round, plus which raw seat you're in and
-		// which on-screen row each opponent's tiles are drawn in.
+		// New deal detected: the rules, target, scores and buy-in, plus
+		// which raw seat you're in.
 		void LogRoundStart(rage::scrThread* thread, std::int32_t mySeat, std::int32_t occupiedCount)
 		{
 			Log::Write("Trace: ==== new deal: {} seats, you are raw seat {} ====", occupiedCount, mySeat);
 			LogRulesAndScores(thread, "Trace:");
-
-			int denseRow[kMaxSeats];
-			ComputeDenseRowForSeat(thread, mySeat, denseRow);
-			std::ostringstream rows;
-			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
-				if (denseRow[seat] != 0)
-					rows << "seat " << seat << " (" << SeatLocal(thread, seat).At(kSeatHandCountOffset).AsInt32() << " tiles) -> row " << denseRow[seat] << "; ";
-			Log::Write("Trace: CHECK opponent rows (row 1 = bottom): {}-- {}", rows.str(),
-				mySeat == 0 ? "you're in seat 0 again; a different raw seat is what's still untested"
-					: "NOT seat 0 -- check each row sits next to the right opponent");
 		}
 
 		// Frame time while the advisor thinks (your decision window) vs.
@@ -3767,12 +3758,15 @@ namespace DominoCheat
 				bool followed = played == d.rec.tile;
 				line.AddTile("played", played).Add("followed", followed);
 
-				// Which end did it go on? Only checkable while I still hold
-				// tiles (the open-end probe tests against my own hand).
+				// Which end did it go on? Read from the exact board when the
+				// tracker has it: the probe fallback misses an end next to a
+				// double, which flagged a double played on its own number
+				// (end 4 -> [4|4]) as the wrong end. Only checkable while I
+				// still hold tiles (the probe tests against my own hand).
 				if (handCountNow > 0)
 				{
 					std::array<std::int32_t, 7> postPips{};
-					std::uint32_t postCount = DetermineOpenEnds(thread, seat, postPips.data(), static_cast<std::uint32_t>(postPips.size()));
+					std::uint32_t postCount = CurrentOpenEnds(thread, seat, postPips.data(), static_cast<std::uint32_t>(postPips.size()));
 					line.Add("postEnds", postPips.data(), static_cast<int>(postCount));
 					if (followed && d.rec.endPip >= 0)
 					{
@@ -3848,6 +3842,60 @@ namespace DominoCheat
 					g_debugTrace.roundNpcMatches++;
 			}
 
+			// Writes the round in progress as a round line and closes it.
+			// `endedBy` is "nextDeal" or "tableExit"; on a table exit the
+			// scores are the last ones seen, and the round may not have
+			// finished (leaving mid-round).
+			void WriteRound(const std::array<std::int32_t, kMaxSeats>& scoresNow, std::string_view endedBy)
+			{
+				DebugTraceState& t = g_debugTrace;
+				if (!t.roundValid)
+					return;
+				t.roundValid = false;
+
+				GameRecord::JsonLine line;
+				line.Add("type", "round").Add("id", Timestamp())
+					.Add("rules", DominoAiPolicy::RulesName(t.roundRules))
+					.Add("mySeat", static_cast<std::int64_t>(t.roundMySeat));
+				std::int32_t occ[kMaxSeats]{};
+				bool gameOver = false;
+				for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+				{
+					occ[seat] = t.roundOccupied[seat] ? 1 : 0;
+					// Scores reset after a game ends; a table exit can also
+					// catch them still at the target, before the reset.
+					if (t.roundOccupied[seat] && (scoresNow[seat] < t.roundScoresBefore[seat] ||
+						(t.roundPointsTarget > 0 && scoresNow[seat] >= t.roundPointsTarget)))
+						gameOver = true;
+				}
+				line.Add("occupied", occ, static_cast<int>(kMaxSeats));
+				static constexpr std::string_view kFinalKeys[kMaxSeats] = { "final0", "final1", "final2", "final3" };
+				for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+				{
+					const DebugHandSnapshot& h = t.roundFinalHands[seat];
+					line.AddTiles(kFinalKeys[seat], h.tiles.data(), t.roundOccupied[seat] && h.count > 0 ? h.count : 0);
+				}
+				line.Add("scoresBefore", t.roundScoresBefore.data(), static_cast<int>(kMaxSeats))
+					.Add("scoresAfter", scoresNow.data(), static_cast<int>(kMaxSeats))
+					.Add("gameOver", gameOver)
+					.Add("endedBy", endedBy)
+					.Add("pointsTarget", static_cast<std::int64_t>(t.roundPointsTarget))
+					.Add("buyIn", static_cast<std::int64_t>(t.roundBuyIn))
+					.Add("decisions", static_cast<std::int64_t>(t.roundDecisions))
+					.Add("followed", static_cast<std::int64_t>(t.roundFollowed))
+					.Add("wrongEnds", static_cast<std::int64_t>(t.roundWrongEnds))
+					.Add("npcPredictions", static_cast<std::int64_t>(t.roundNpcPredictions))
+					.Add("npcMatches", static_cast<std::int64_t>(t.roundNpcMatches));
+				AppendLine(line.Str());
+			}
+
+			// The table's script thread is gone (or was replaced): write the
+			// last round, which no next deal will close.
+			void OnTableExit()
+			{
+				WriteRound(g_debugTrace.roundLastScores, "tableExit");
+			}
+
 			// Called at a new deal: closes the previous round (if one was
 			// seen from its own deal) and opens the new one.
 			void OnNewDeal(rage::scrThread* thread, std::int32_t mySeat, const std::array<bool, kMaxSeats>& occupied)
@@ -3858,41 +3906,13 @@ namespace DominoCheat
 					if (occupied[seat])
 						scoresNow[seat] = ReadSeatScore(thread, seat);
 
-				if (t.roundValid && t.roundOccupied == occupied && t.roundMySeat == mySeat)
-				{
-					GameRecord::JsonLine line;
-					line.Add("type", "round").Add("id", Timestamp())
-						.Add("rules", DominoAiPolicy::RulesName(t.roundRules))
-						.Add("mySeat", static_cast<std::int64_t>(t.roundMySeat));
-					std::int32_t occ[kMaxSeats]{};
-					bool gameOver = false;
-					for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
-					{
-						occ[seat] = occupied[seat] ? 1 : 0;
-						if (occupied[seat] && scoresNow[seat] < t.roundScoresBefore[seat])
-							gameOver = true;
-					}
-					line.Add("occupied", occ, static_cast<int>(kMaxSeats));
-					static constexpr std::string_view kFinalKeys[kMaxSeats] = { "final0", "final1", "final2", "final3" };
-					for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
-					{
-						const DebugHandSnapshot& h = t.roundFinalHands[seat];
-						line.AddTiles(kFinalKeys[seat], h.tiles.data(), occupied[seat] && h.count > 0 ? h.count : 0);
-					}
-					line.Add("scoresBefore", t.roundScoresBefore.data(), static_cast<int>(kMaxSeats))
-						.Add("scoresAfter", scoresNow.data(), static_cast<int>(kMaxSeats))
-						.Add("gameOver", gameOver)
-						.Add("pointsTarget", static_cast<std::int64_t>(t.roundPointsTarget))
-						.Add("buyIn", static_cast<std::int64_t>(t.roundBuyIn))
-						.Add("decisions", static_cast<std::int64_t>(t.roundDecisions))
-						.Add("followed", static_cast<std::int64_t>(t.roundFollowed))
-						.Add("wrongEnds", static_cast<std::int64_t>(t.roundWrongEnds))
-						.Add("npcPredictions", static_cast<std::int64_t>(t.roundNpcPredictions))
-						.Add("npcMatches", static_cast<std::int64_t>(t.roundNpcMatches));
-					AppendLine(line.Str());
-				}
+				// A different seat layout is a different table: nothing
+				// comparable to write.
+				if (t.roundOccupied == occupied && t.roundMySeat == mySeat)
+					WriteRound(scoresNow, "nextDeal");
 
 				t.roundValid = mySeat >= 0;
+				t.roundLastScores = scoresNow;
 				t.roundMySeat = mySeat;
 				t.roundRules = ReadAiRules(thread);
 				t.roundOccupied = occupied;
@@ -3918,8 +3938,8 @@ namespace DominoCheat
 			// between-rounds scoreboard shows, which dropped a round line.)
 			if (thread->m_Context.m_ThreadId != g_debugTrace.lastThreadId)
 			{
+				GameRecorder::OnTableExit();
 				g_debugTrace.lastThreadId = thread->m_Context.m_ThreadId;
-				g_debugTrace.roundValid = false;
 				g_debugTrace.lastValidTurnSeat = -1;
 				g_lastDecision.valid = false;
 			}
@@ -3954,6 +3974,11 @@ namespace DominoCheat
 					g_debugTrace.lastValidTurnSeat = -1; // the opening seat isn't a successor of anyone
 				}
 				g_debugTrace.lastHandTotal = handTotal;
+
+				if (g_debugTrace.roundValid)
+					for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+						if (g_debugTrace.roundOccupied[seat])
+							g_debugTrace.roundLastScores[seat] = ReadSeatScore(thread, seat);
 
 				if (turnSeat >= 0 && turnSeat < static_cast<std::int32_t>(kMaxSeats) && turnSeat != g_debugTrace.lastValidTurnSeat)
 				{
@@ -4022,7 +4047,7 @@ namespace DominoCheat
 							if (rec.endPip >= 0)
 								label << " (end " << rec.endPip << " -> " << rec.resultPip << ")";
 							if (rec.hasAlternateEnd)
-								label << " [AMBIGUOUS -- tile ALSO fits end " << rec.alternateEndPip << ", do NOT use it]";
+								label << " [also fits end " << rec.alternateEndPip << "]";
 							label << " [" << DominoSearch::OutcomeName(rec.outcome) << " "
 								<< (rec.exact ? "" : "~") << (rec.points >= 0 ? "+" : "") << rec.points << " @depth " << rec.completedDepth << "]";
 						}
@@ -4144,7 +4169,7 @@ namespace DominoCheat
 						if (match && static_cast<std::int32_t>(seat) == mySeat && pending.endPip >= 0 && handCount > 0)
 						{
 							std::array<std::int32_t, 7> postPips{};
-							std::uint32_t postCount = DetermineOpenEnds(thread, seat, postPips.data(), static_cast<std::uint32_t>(postPips.size()));
+							std::uint32_t postCount = CurrentOpenEnds(thread, seat, postPips.data(), static_cast<std::uint32_t>(postPips.size()));
 							bool resultPipPresent = false;
 							for (std::uint32_t i = 0; i < postCount; i++)
 								if (postPips[i] == pending.resultPip)
@@ -4271,7 +4296,7 @@ namespace DominoCheat
 								recLine << "Best move: " << FormatTile(rec.tile) << " on end " << rec.endPip
 									<< " -> new end " << rec.resultPip << " (opponent tiles that answer: " << rec.opponentRespondCount << ")";
 							if (rec.hasAlternateEnd)
-								recLine << "  [AMBIGUOUS: tile ALSO fits end " << rec.alternateEndPip << " -- do NOT play it there]";
+								recLine << "  [also fits end " << rec.alternateEndPip << "]";
 							if (!rec.isWinningMove)
 								recLine << "  [" << DominoSearch::OutcomeName(rec.outcome) << " " << (rec.exact ? "" : "~")
 									<< (rec.points >= 0 ? "+" : "") << rec.points << " @depth " << rec.completedDepth << "]";
@@ -4414,6 +4439,9 @@ namespace DominoCheat
 		{
 			CancelMoveAdvice();
 			BoardTracker::Invalidate();
+#ifdef _DEBUG
+			GameRecorder::OnTableExit();
+#endif
 			return;
 		}
 

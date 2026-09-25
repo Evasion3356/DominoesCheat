@@ -93,6 +93,18 @@ namespace DominoAiPolicy
 			? resultingEndTotal : 0;
 	}
 
+	// func_614, exactly: does the scripted AI treat this native end total
+	// (f_4) as a scoring play? Nonzero and a multiple of 5/3 -- with NO
+	// "> 0" test, so the negative totals the native reports for some
+	// spinner-side spots (see DominoSearch::NativeEndTotal) count too.
+	// Seen live 2026-09-25: an All Fives NPC took a -5 spot over a
+	// non-scoring 6. Not the points awarded -- see ScoringPoints().
+	inline bool IsAiScoringTotal(Rules rules, int nativeEndTotal)
+	{
+		int divisor = rules == Rules::AllThrees ? 3 : (rules == Rules::AllFives ? 5 : 0);
+		return divisor != 0 && nativeEndTotal != 0 && nativeEndTotal % divisor == 0;
+	}
+
 	struct Candidate
 	{
 		int handIndex = -1;
@@ -121,8 +133,11 @@ namespace DominoAiPolicy
 	{
 		if (rules == Rules::Unknown || !hand || !candidates || handCount <= 0)
 			return -1;
+		// func_352: the highest scoring total (it may be negative), last
+		// on a tie. Otherwise func_353: the highest pip sum, last on a tie.
 		int best = -1;
-		int bestPoints = 0;
+		bool bestScoring = false;
+		int bestTotal = 0;
 		int bestPips = -1;
 		for (int i = 0; i < candidateCount; i++)
 		{
@@ -130,13 +145,23 @@ namespace DominoAiPolicy
 			if (!candidate.hasPlacement || candidate.handIndex < 0 || candidate.handIndex >= handCount ||
 				!hand[candidate.handIndex].IsValid())
 				continue;
-			int points = ScoringPoints(rules, candidate.resultingEndTotal);
-			int pips = hand[candidate.handIndex].PipTotal();
-			if (points > bestPoints || (points == bestPoints && (points > 0 || pips >= bestPips)))
+			if (IsAiScoringTotal(rules, candidate.resultingEndTotal))
 			{
-				best = i;
-				bestPoints = points;
-				bestPips = pips;
+				if (!bestScoring || candidate.resultingEndTotal >= bestTotal)
+				{
+					best = i;
+					bestScoring = true;
+					bestTotal = candidate.resultingEndTotal;
+				}
+			}
+			else if (!bestScoring)
+			{
+				int pips = hand[candidate.handIndex].PipTotal();
+				if (pips >= bestPips)
+				{
+					best = i;
+					bestPips = pips;
+				}
 			}
 		}
 		return best;

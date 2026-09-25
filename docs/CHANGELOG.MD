@@ -18,6 +18,9 @@
 - No advice on some turns: the check for which numbers are open could
   miss an end next to a double.
 - The first move of a round was evaluated as if every number were open.
+- On All Fives/All Threes, the advisor could expect an opponent to make a
+  different move than the game's AI actually makes when a spot next to the
+  spinner was available.
 - On All Fives/All Threes, a tile that fits two ends could be credited
   with the points only the other end scores.
 

@@ -812,20 +812,30 @@ namespace DominoSearch
 			{
 				if (!state.exactBoard)
 					return legal;
-				std::array<int, kMaxMovesPerNode> points{};
-				int bestPoints = 0;
+				// The native total can be negative on a spinner side, and
+				// func_614 still counts a negative multiple as scoring.
+				std::array<int, kMaxMovesPerNode> totals{};
+				std::array<bool, kMaxMovesPerNode> scores{};
+				bool anyScoring = false;
+				int bestTotal = 0;
 				for (int i = 0; i < legal.count; i++)
 				{
 					const Move& mv = legal.moves[static_cast<std::size_t>(i)];
 					Board after = PlaceOnBoard(state.board, mv.tile, mv.target, mv.endPip);
-					points[static_cast<std::size_t>(i)] = DominoAiPolicy::ScoringPoints(state.rules, NativeEndTotal(state.board, after, mv.target));
-					bestPoints = std::max(bestPoints, points[static_cast<std::size_t>(i)]);
+					int total = NativeEndTotal(state.board, after, mv.target);
+					totals[static_cast<std::size_t>(i)] = total;
+					scores[static_cast<std::size_t>(i)] = DominoAiPolicy::IsAiScoringTotal(state.rules, total);
+					if (scores[static_cast<std::size_t>(i)] && (!anyScoring || total > bestTotal))
+					{
+						anyScoring = true;
+						bestTotal = total;
+					}
 				}
-				if (bestPoints > 0)
+				if (anyScoring)
 				{
 					MoveList scoring;
 					for (int i = 0; i < legal.count; i++)
-						if (points[static_cast<std::size_t>(i)] == bestPoints)
+						if (scores[static_cast<std::size_t>(i)] && totals[static_cast<std::size_t>(i)] == bestTotal)
 							scoring.Push(legal.moves[static_cast<std::size_t>(i)]);
 					return scoring;
 				}

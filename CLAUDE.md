@@ -464,7 +464,9 @@ the search's full input, the advice, what I played, whether it went on
 the recommended end), an `npcMove` (an opponent play the scripted-AI
 model predicted: hand, open ends, the native candidate list in order,
 predicted vs played) or a `round` (final hands, scores before/after,
-target, buy-in, per-round tallies). To pin a real position as a
+target, buy-in, per-round tallies). A round line is written at the next
+deal, or when the table's script ends (`"endedBy":"tableExit"`, scores =
+last seen; the round may be unfinished if the player left mid-round). To pin a real position as a
 regression test, copy its line into `tests/fixtures/games.jsonl` and add
 `"expectTile":[low,high]` (plus optional `"expectEnd"` on a decision);
 `TestRecordedGames` replays decisions through `FindBestMove()` and NPC
@@ -581,7 +583,11 @@ elsewhere, including shuffling and presentation).
 
 - `func_352` (lines 14761-14798) chooses the largest nonzero scoring
   resulting-end total. `func_614` (23907-23931) recognizes multiples of
-  five or three according to the table rule.
+  five or three according to the table rule -- nonzero, with NO `> 0`
+  test, so the negative totals the native reports for some spinner-side
+  spots count as scoring (-5 on All Fives). Found live 2026-09-25 (the
+  one mispredicted NPC move in a 4-seat All Fives game, now pinned in
+  `tests/fixtures/games.jsonl`); `DominoAiPolicy::IsAiScoringTotal()`.
 - `func_353` (14800-14835) falls back to the highest tile pip sum, using
   `func_615` (23933-23936).
 - Both selectors replace the winner on equal rank: the **last valid
@@ -789,15 +795,10 @@ the INI you're testing with there is never overwritten.
 Both "Probe Legal Moves" and the "Turn: seat N" overlay line are now
 CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
 
-1. **Live-test Session 9/11's search** against a real full 4-seat,
-   boneyard-empty game via `F12 -> Probe Best Move` -- confirm it still
-   only recommends legal moves, and ideally track win rate against the
-   old 1-ply heuristic's own baseline. Also worth watching real
-   frame-time on the decision tick. (The 2-seat, boneyard-heavy,
-   Draw-rules case is now CONFIRMED LIVE -- 2026-09-17, see the numbered
-   Session list's item 11 and "Decision engine (Session 11)" above. The
-   4-seat, boneyard-empty case and any All Fives/Threes table are still
-   untested.)
+1. DONE (2026-09-25): the search is CONFIRMED LIVE on 2-, 3- and
+   4-seat tables, Draw and All Fives, with the exact board. The one
+   remaining rule set is All Threes, only played at Blackwater, which
+   the player can't reach yet.
 2. **Watch a hand grow past 7 tiles** (draw from the boneyard because no
    hand tile was playable) and confirm `ProbeSeatHands()`'s widened
    (up to 19) tile dump shows the real extra tile(s) rather than garbage.
@@ -833,11 +834,10 @@ CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
    direction put opponents in sensible spots for at least the seat
    tested. (a) DONE (2026-09-25): `OpponentHandBaseX/Y/StepY`,
    `BoneyardX/Y` and `MoveAdviceX/Y` -- user confirmed the HUD layout
-   looks right in game at the current defaults. Still open: (b) `ComputeDenseRowForSeat()`'s
-   direction has only been checked from ONE seat -- worth a second data
-   point from a different raw seat to confirm it truly rotates relative
-   to you (PokerCheat's own confirmation) rather than coincidentally
-   lining up from the one seat tried so far. (c) DONE: `WorldMarkerOffsetX/Y/
+   looks right in game at the current defaults. (b) DROPPED (2026-09-25):
+   checking `ComputeDenseRowForSeat()`'s direction from another seat
+   needs the player to match seat numbers to on-screen characters, which
+   the game never shows; see the session summary below. (c) DONE: `WorldMarkerOffsetX/Y/
    FontSize` were already confirmed centering "PLAY THIS ONE!"/"WINNING
    MOVE" correctly (Session 8, `WorldMarkerOffsetX=-0.03`). A separate,
    later bug in the newer "PLAY HERE!" board marker (added Session 12)
@@ -850,8 +850,7 @@ CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
 
 **Live-test checks (2026-09-25, Debug only):** F12 now also has `Probe
 Rules & Scores` and `Probe Seat Hands`, and the per-tick Debug trace logs
-`CHECK` lines on its own: rules/target/scores/buy-in and opponent HUD
-rows at every new deal, turn order against `DominoSearch`'s `NextSeat()`,
+`CHECK` lines on its own: rules/target/scores/buy-in at every new deal, turn order against `DominoSearch`'s `NextSeat()`,
 every mid-round draw against the boneyard's draw order (plus a full
 validity check once a hand passes 7 tiles), and frame time during your
 decision window vs. the rest of the game. `grep CHECK DominoCheat.log`
@@ -896,9 +895,30 @@ seat scores (they update mid-round on All Fives), turn order 0 -> 2 -> 1
 (3-seat), boneyard draw order, hands past 7 tiles, frame time (no hitches
 at `WallClockBudget=1000`), the scripted All Fives AI (105/105 moves),
 the advised-end marker, and the exact board. The player's raw seat
-varies by chair (seat 1 and seat 2 seen). Still untested: a 4-seat table,
-All Threes, Block/Draw with the exact board, and whether the opponent
-tile rows sit next to the right NPC from a non-zero seat (visual only).
+varies by chair (seats 0, 1 and 2 seen). A later session the same day
+(seat 0, seats 0/1/3 occupied with seat 2 EMPTY -- the first layout where
+turn order had to skip a seat, 0 -> 1 -> 3) was clean: 42/42 decisions on
+the exact board and solved exactly, 75/75 NPC moves and 75/75 board totals
+matched, 112/112 turn-order checks matched, every game won. Its one
+`wrongEnd` was the player placing the advised tile on the other end (the
+marker's spot was the right one: the next NPC played onto it). Because
+play goes around the table in 0 -> 2 -> 1 -> 3 order, raw seat numbers map
+to physical chairs by that order (seat 1 sits across from seat 0). The
+"which NPC is each tile row next to" check was dropped: the game never
+ties a seat number to a character on screen, so the player can't answer
+it, and the advice doesn't depend on it. Later still: 1v1 Draw
+(Emerald Station, points target 60), 1v1 All Fives, and a full 4-seat
+All Fives game -- 38/38 and then 13/13 decisions on the exact board, all
+wins; the 4-seat game solved exactly from the first move (depth 27-28),
+worst frame 13.9 ms. Its one NPC miss was a real bug: `func_614` counts a
+NEGATIVE native total (-5, spinner side) as scoring, which our port
+didn't (fixed, see "Scripted opponent policy"). A `wrongEnd` flag on a
+double played onto its own number was a false alarm from the post-move
+check using the open-end probe (now uses the exact board). Rule sets by
+location (RDR2 wiki): All Fives = Saint Denis, Draw = Emerald Station,
+All Threes = Blackwater. Block isn't offered anywhere. The NPC count at a
+table varies per visit. Still untested: All Threes (Blackwater, not
+reachable yet).
 Debug writes `DominoCheat_games.jsonl` (see Tests) -- summarize it with a
 short script after a session rather than asking the player.
 
