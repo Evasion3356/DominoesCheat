@@ -813,6 +813,13 @@
 #include "Config.h"
 #include "Localization.h"
 #include "script.h"
+#ifdef _DEBUG
+#include "GameRecord.h"
+#include "LogFallback.h"
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#endif
 
 #include <string>
 #include <string_view>
@@ -892,7 +899,15 @@ namespace DominoCheat
 	// it has a header slot at f_4 regardless of what value ends up
 	// living there).
 	constexpr std::uint32_t kSeatOccupancyOffset = 0;   // == seat's own raw index when dealt, CONFIRMED LIVE
-	constexpr std::uint32_t kSeatActiveFlagOffset = 1;  // reads 100 when occupied, 0 when empty -- CONFIRMED LIVE as occupancy-correlated, exact meaning still untraced
+	// seat.f_1 -- the seat's BUY-IN, in cents. Reads 100 when occupied, 0
+	// when empty (CONFIRMED LIVE as occupancy-correlated). Traced
+	// 2026-09-25: func_144/func_290 (dominoes_sp.ysc.c ~7715/13198) seat a
+	// player with `seat.f_1 = Round.f_666.f_6`, the table's buy-in
+	// (default 100 at ~4675, shown as "MGDOM_BUY_IN" at ~10532); a rise in
+	// it re-sums SeatsHolder.f_5 (the pot, ~8385-8390), which is paid to
+	// the winner on top of GET_PED_MONEY (~9640). Read by
+	// ProbeRulesAndScores() only -- nothing depends on it.
+	constexpr std::uint32_t kSeatBuyInOffset = 1;
 	// seat.f_2 -- ACCUMULATED SCORE toward the table's points target (see
 	// kPointsTargetFieldOffset below). Traced via func_169 (the round-
 	// resolution function, ~line 8700): the round's winner's remaining-
@@ -1383,6 +1398,166 @@ namespace DominoCheat
 		// Defined further down, next to MoveRecommendation (shared with
 		// DetermineBestMove()'s root scoring bonus).
 		std::uint32_t QueryNativeCandidates(rage::scrThread* thread, std::uint32_t seat, DominoAiPolicy::Candidate* out, std::uint32_t maxOut);
+		std::uint32_t DetermineOpenEnds(rage::scrThread* thread, std::uint32_t seat, std::int32_t* outPips, std::uint32_t maxOut, bool verboseLog = false);
+
+		// ---- BoardTracker (2026-09-25) --------------------------------------
+		// The round's exact board -- every open end's pip, which ends are
+		// doubles, the spinner (DominoSearch.h's EXACT BOARD section) -- so
+		// the search can score every placement and predict the All
+		// Fives/Threes AI. Rebuilt from the game's OWN placement log in
+		// SeatsHolder.f_6 (Round.f_14.f_6), found 2026-09-25 from
+		// func_602 (~23700) and func_168 (~8682) and confirmed against a
+		// live stack dump:
+		//   f_6       word 0: the board's end total, recounted after every
+		//             placement (func_354 -> MINIGAME::_0x3F4FD4BED07AB8C4;
+		//             the All Fives/Threes scoring test reads it)
+		//   f_6.f_1   SCR_ARRAY[28] of 5-word records, one per placed tile
+		//             in order: low, high, grid x, grid y, orientation
+		//   f_6.f_142 placed-tile count (func_168: 0 = opening move).
+		//             Records past it are the previous round's leftovers.
+		// The live dump (3-seat All Fives, 11 tiles down) replayed through
+		// DominoSearch::BoardReplay gave total 11, the game's own word 0
+		// (tests/DominoHandEvalTests.cpp TestBoardReplayFromPlacementLog).
+		// Works from any point in a round (the log starts at its first
+		// tile), and every tick the replayed total must equal word 0, or
+		// the board is dropped until the next round and the advice uses
+		// the older distinct-open-numbers model. Never writes game memory.
+		namespace BoardTracker
+		{
+			constexpr std::uint32_t kBoardLogFieldOffset = 6;     // SeatsHolder.f_6
+			constexpr std::uint32_t kRecordArrayFieldOffset = 1;  // f_6.f_1[i /*5*/]
+			constexpr std::uint32_t kRecordStride = 5;
+			constexpr std::uint32_t kPlacedCountFieldOffset = 142; // f_6.f_142
+			constexpr std::int32_t kMaxRecords = 28;
+
+			struct State
+			{
+				bool valid = false;
+				bool loggedFailure = false;
+				std::uint32_t threadId = 0;
+				DominoSearch::BoardReplay replay;
+			};
+
+			State g_state;
+
+			void Reset(std::string_view why)
+			{
+				if (g_state.valid || !g_state.loggedFailure)
+					Log::Write("BoardTracker: not using the exact board -- {}", why);
+				g_state.valid = false;
+				g_state.loggedFailure = true;
+			}
+
+			// Not at a table / mod off: forget the board without logging.
+			void Invalidate()
+			{
+				g_state.valid = false;
+			}
+
+			std::array<bool, 7> OpenPips(const DominoSearch::Board& board)
+			{
+				std::array<bool, 7> open{};
+				for (int e = 0; e < board.count; e++)
+					if (board.ends[e].pip >= 0 && board.ends[e].pip <= 6)
+						open[static_cast<std::size_t>(board.ends[e].pip)] = true;
+				if ((board.spinnerLong > 0 || board.emptySides > 0) && board.spinnerPip >= 0)
+					open[static_cast<std::size_t>(board.spinnerPip)] = true;
+				return open;
+			}
+
+			// The board's distinct open numbers, ascending; returns how many.
+			std::uint32_t OpenPipList(const DominoSearch::Board& board, std::int32_t* out, std::uint32_t maxOut)
+			{
+				std::array<bool, 7> open = OpenPips(board);
+				std::uint32_t written = 0;
+				for (std::int32_t pip = 0; pip <= 6 && written < maxOut; pip++)
+					if (open[static_cast<std::size_t>(pip)])
+						out[written++] = pip;
+				return written;
+			}
+
+			void Update(rage::scrThread* thread)
+			{
+				const std::uint32_t threadId = thread->m_Context.m_ThreadId;
+				if (threadId != g_state.threadId)
+				{
+					g_state = State{};
+					g_state.threadId = threadId;
+				}
+
+				ScriptLocal log = SeatsHolderLocal(thread).At(kBoardLogFieldOffset);
+				const std::int32_t count = log.At(kPlacedCountFieldOffset).AsInt32();
+				if (count < 0 || count > kMaxRecords)
+				{
+					Reset("the game's placed-tile count is out of range");
+					return;
+				}
+				if (count < g_state.replay.applied || (count == 0 && g_state.replay.board.placed))
+				{
+					// A new round: the log starts over.
+					g_state.replay = DominoSearch::BoardReplay{};
+					g_state.loggedFailure = false;
+#ifdef _DEBUG
+					Log::Write("Trace: board tracker: new round");
+#endif
+				}
+
+				while (g_state.replay.ok && g_state.replay.applied < count)
+				{
+					ScriptLocal record = log.At(kRecordArrayFieldOffset).At(static_cast<std::uint32_t>(g_state.replay.applied), kRecordStride);
+					std::int32_t a = record.AsInt32(), b = record.At(1).AsInt32();
+					DominoSearch::PlacedRecord placed;
+					placed.tile = DominoHandEval::Tile{ (std::min)(a, b), (std::max)(a, b) };
+					placed.gx = record.At(2).AsInt32();
+					placed.gy = record.At(3).AsInt32();
+					g_state.replay.Apply(placed);
+#ifdef _DEBUG
+					if (g_state.replay.ok)
+						Log::Write("Trace: board tracker: tile {} [{}|{}] at ({},{}) -> total {}", g_state.replay.applied - 1,
+							placed.tile.low, placed.tile.high, placed.gx, placed.gy, DominoSearch::BoardTotal(g_state.replay.board));
+#endif
+				}
+				if (!g_state.replay.ok)
+				{
+					Reset("a placed tile didn't fit the board model");
+					return;
+				}
+
+				const std::int32_t gameTotal = log.AsInt32();
+				const std::int32_t modelTotal = DominoSearch::BoardTotal(g_state.replay.board);
+				if (count > 0 && modelTotal != gameTotal)
+				{
+#ifdef _DEBUG
+					if (g_state.valid)
+						Log::Write("Trace: CHECK board tracker: model total {} vs game total {} after {} tiles -- MISMATCH", modelTotal, gameTotal, count);
+#endif
+					Reset("its end total disagrees with the game's");
+					return;
+				}
+#ifdef _DEBUG
+				if (!g_state.valid && count > 0)
+					Log::Write("Trace: CHECK board tracker: model total {} == game total {} after {} tiles -- MATCH", modelTotal, gameTotal, count);
+#endif
+				g_state.valid = true;
+			}
+
+			// The exact board for this round, or nullptr if not available.
+			const DominoSearch::Board* Current()
+			{
+				return g_state.valid ? &g_state.replay.board : nullptr;
+			}
+		}
+
+		// Open numbers for `seat`'s decision: the exact board's when the
+		// tracker has it, else DetermineOpenEnds()'s probe (which can miss
+		// an end -- seen live: a synthetic double won't fit next to a
+		// [5|5] end the game still accepts [2|5] on).
+		std::uint32_t CurrentOpenEnds(rage::scrThread* thread, std::uint32_t seat, std::int32_t* outPips, std::uint32_t maxOut)
+		{
+			if (const DominoSearch::Board* tracked = BoardTracker::Current())
+				return BoardTracker::OpenPipList(*tracked, outPips, maxOut);
+			return DetermineOpenEnds(thread, seat, outPips, maxOut);
+		}
 
 		// Diffs two hand snapshots by TILE IDENTITY (via EncodeTile()) into
 		// a per-value count, rather than by array index -- a played/drawn
@@ -1472,7 +1647,33 @@ namespace DominoCheat
 			// the post-move verification in LogDebugTrace()'s hand-diff loop.
 			std::int32_t endPip = -1;
 			std::int32_t resultPip = -1;
+
+			// Opponent predictions only: everything the model saw, for the
+			// game record's npcMove line (see GameRecorder below).
+			bool hasCapture = false;
+			DominoAiPolicy::Rules rules = DominoAiPolicy::Rules::Unknown;
+			std::array<DominoHandEval::Tile, kMaxHandCapacity> hand{};
+			int handCount = 0;
+			std::array<DominoAiPolicy::Candidate, kCandidateCapacity> candidates{};
+			int candidateCount = 0;
+			std::array<std::int32_t, 7> ends{};
+			int endCount = 0;
+			bool hasBoard = false; // the tracker's exact board at capture time
+			DominoSearch::Board board;
 		};
+
+		// The last advice DetermineBestMove() returned, with the exact
+		// search input it came from -- written as the game record's
+		// decision line once I actually play (see GameRecorder below).
+		struct DebugDecision
+		{
+			bool valid = false;
+			std::int32_t mySeat = -1;
+			DominoSearch::GameState state;
+			DominoSearch::Recommendation rec;
+		};
+
+		DebugDecision g_lastDecision;
 
 		struct DebugTraceState
 		{
@@ -1481,6 +1682,32 @@ namespace DominoCheat
 			std::array<bool, kMaxSeats> predictionLogged{};
 			std::int32_t lastTurnSeat = -2;
 			std::int32_t lastTurnSubState = -2;
+
+			// Live-test checks (2026-09-25) -- see LogTurnOrderCheck(),
+			// LogRoundStart(), LogDrawCheck() and UpdateFrameTimeStats().
+			std::int32_t lastValidTurnSeat = -1; // last 0-3 turn seat seen; -1 = none yet this table
+			std::int32_t lastHandTotal = -1;     // sum of occupied hand counts on the previous tick
+			std::int32_t lastDeckCursor = -1;
+			std::uint32_t lastThreadId = 0;
+			bool haveLastTick = false;
+			std::chrono::steady_clock::time_point lastTick{};
+			bool inMyDecision = false;
+			double decisionFrames = 0.0, decisionSumMs = 0.0, decisionMaxMs = 0.0;
+			double otherFrames = 0.0, otherSumMs = 0.0;
+			int decisionHitches = 0; // frames over kFrameHitchMs during the decision window
+
+			// Game record (GameRecorder below): the round in progress,
+			// written as a round line at the next deal.
+			bool roundValid = false;
+			std::int32_t roundMySeat = -1;
+			DominoAiPolicy::Rules roundRules = DominoAiPolicy::Rules::Unknown;
+			std::array<bool, kMaxSeats> roundOccupied{};
+			std::array<std::int32_t, kMaxSeats> roundScoresBefore{};
+			std::int32_t roundPointsTarget = 0;
+			std::int32_t roundBuyIn = 0;
+			std::array<DebugHandSnapshot, kMaxSeats> roundFinalHands{}; // last tick with tiles in hand
+			int roundDecisions = 0, roundFollowed = 0, roundWrongEnds = 0;
+			int roundNpcPredictions = 0, roundNpcMatches = 0;
 		};
 
 		DebugTraceState g_debugTrace;
@@ -1512,6 +1739,13 @@ namespace DominoCheat
 
 			pred.valid = true;
 			pred.tile = hand[candidates[chosen].handIndex];
+			pred.hasCapture = true;
+			pred.rules = rules;
+			pred.hand = hand;
+			pred.handCount = handCount;
+			pred.candidates = candidates;
+			pred.candidateCount = count;
+			pred.endCount = static_cast<int>(DetermineOpenEnds(thread, seat, pred.ends.data(), static_cast<std::uint32_t>(pred.ends.size())));
 			std::ostringstream label;
 			label << "native AI policy (" << DominoAiPolicy::RulesName(rules) << "): " << FormatTile(pred.tile);
 			pred.label = label.str();
@@ -1571,7 +1805,7 @@ namespace DominoCheat
 		// default (false) -- the real mySeat advice path calls this every
 		// tick of the decision window and must not pay for or spam this.
 		// LogOpponentCandidateProbe() is the only caller that turns it on.
-		std::uint32_t DetermineOpenEnds(rage::scrThread* thread, std::uint32_t seat, std::int32_t* outPips, std::uint32_t maxOut, bool verboseLog = false)
+		std::uint32_t DetermineOpenEnds(rage::scrThread* thread, std::uint32_t seat, std::int32_t* outPips, std::uint32_t maxOut, bool verboseLog)
 		{
 			ScriptLocal seatLocal = SeatLocal(thread, seat);
 			std::int32_t handCount = seatLocal.At(kSeatHandCountOffset).AsInt32();
@@ -1836,6 +2070,11 @@ namespace DominoCheat
 			// trusting the player to notice the tile fits twice.
 			bool hasAlternateEnd = false;
 			std::int32_t alternateEndPip = -1;
+
+			// Exact board only (BoardTracker): the native candidate end
+			// total (f_4) the recommended placement will show, so the
+			// marker can pick that exact spot among same-number ends.
+			std::int32_t nativeTotal = DominoSearch::kNoNativeTotal;
 		};
 
 		// Reads the scripted AI's own legal-move candidate list for a seat
@@ -1878,6 +2117,172 @@ namespace DominoCheat
 			return written;
 		}
 
+		// Native candidates for a one-tile SYNTHETIC hand: `tile` written
+		// into hand slot 0 of a LOCAL copy of the seat (same technique as
+		// DetermineOpenEnds() -- real game memory is never written). Only
+		// candidates for slot 0 are returned.
+		std::uint32_t QuerySyntheticTileCandidates(rage::scrThread* thread, std::uint32_t seat, const DominoHandEval::Tile& tile,
+			DominoAiPolicy::Candidate* out, std::uint32_t maxOut)
+		{
+			void* seatAddr = GamePointers::GetScriptLocalAddress(thread, SeatLocal(thread, seat).Index());
+			if (!seatAddr)
+				return 0;
+
+			std::array<std::int64_t, kSeatStride> seatCopy{};
+			std::memcpy(seatCopy.data(), seatAddr, seatCopy.size() * sizeof(std::int64_t));
+			seatCopy[kSeatHandArrayFieldOffset + 1] = tile.low;
+			seatCopy[kSeatHandArrayFieldOffset + 2] = tile.high;
+
+			std::array<std::int64_t, 1 + kCandidateCapacity * kCandidateStride> buffer{};
+			buffer[0] = kCandidateCapacity;
+			for (std::uint32_t i = 0; i < kCandidateCapacity; i++)
+				buffer[1 + i * kCandidateStride + 3] = -1; // func_612's placement sentinel
+
+			int count = MINIGAME::_FIND_PLAYABLE_HAND_TILES(reinterpret_cast<Any*>(&seatCopy[kSeatHandArrayFieldOffset]), reinterpret_cast<Any*>(buffer.data()));
+			count = (std::clamp)(count, 0, static_cast<int>(kCandidateCapacity));
+
+			std::uint32_t written = 0;
+			for (int i = 0; i < count && written < maxOut; i++)
+			{
+				std::size_t offset = 1 + static_cast<std::size_t>(i) * kCandidateStride;
+				if (buffer[offset] != 0 || (buffer[offset + 1] == 0 && buffer[offset + 2] == 0))
+					continue;
+				DominoAiPolicy::Candidate c;
+				c.handIndex = 0;
+				c.hasPlacement = true;
+				c.gridF1 = static_cast<int>(buffer[offset + 1]);
+				c.gridF2 = static_cast<int>(buffer[offset + 2]);
+				c.gridOrientation = static_cast<int>(buffer[offset + 3]);
+				c.resultingEndTotal = static_cast<int>(buffer[offset + 4]);
+				out[written++] = c;
+			}
+			return written;
+		}
+
+		// Which end number a native candidate for hand tile `tile` attaches
+		// to, or -1 if that can't be told. A double, or a tile with only
+		// one of its numbers open, attaches to that number. A tile whose
+		// two different numbers are both open is placed by grid spot: a
+		// synthetic [e|x], x a number that is NOT open (so it fits end e
+		// only), lands on exactly the spots a same-shaped tile attached to
+		// end e does. Probes are cached per pip for one caller's pass.
+		struct EndProbeCache
+		{
+			std::array<bool, 7> probed{};
+			std::array<std::array<DominoAiPolicy::Candidate, kCandidateCapacity>, 7> spots{};
+			std::array<std::uint32_t, 7> counts{};
+		};
+
+		std::int32_t CandidateEndPip(rage::scrThread* thread, std::uint32_t seat, const DominoHandEval::Tile& tile,
+			const DominoAiPolicy::Candidate& candidate, const std::int32_t* open, std::uint32_t openCount, EndProbeCache& cache)
+		{
+			if (!tile.IsValid())
+				return -1;
+			if (tile.IsDouble())
+				return tile.low;
+
+			auto isOpen = [&](std::int32_t pip) { return std::find(open, open + openCount, pip) != open + openCount; };
+			bool lowOpen = isOpen(tile.low), highOpen = isOpen(tile.high);
+			if (lowOpen != highOpen)
+				return lowOpen ? tile.low : tile.high;
+			if (!lowOpen)
+				return -1;
+
+			std::int32_t closed = -1;
+			for (std::int32_t pip = 0; pip <= 6 && closed < 0; pip++)
+				if (!isOpen(pip))
+					closed = pip;
+			if (closed < 0)
+				return -1;
+
+			for (std::int32_t end : { tile.low, tile.high })
+			{
+				std::size_t e = static_cast<std::size_t>(end);
+				if (!cache.probed[e])
+				{
+					DominoHandEval::Tile probe{ (std::min)(end, closed), (std::max)(end, closed) };
+					cache.counts[e] = QuerySyntheticTileCandidates(thread, seat, probe, cache.spots[e].data(), static_cast<std::uint32_t>(kCandidateCapacity));
+					cache.probed[e] = true;
+				}
+				for (std::uint32_t k = 0; k < cache.counts[e]; k++)
+					if (cache.spots[e][k].gridF1 == candidate.gridF1 && cache.spots[e][k].gridF2 == candidate.gridF2)
+						return end;
+			}
+			return -1;
+		}
+
+		// Which of the game's placement spots for hand tile `handIndex` is
+		// the move the advice actually chose (tile on end `endPip`).
+		// Returns an index into `candidates`, or -1 if the tile has none.
+		//
+		// A non-double tile [e|r] can also fit end r. The spots on end e
+		// are found by asking the game where a synthetic [e|x] would go,
+		// x being a number that is NOT open (so it fits end e only): a
+		// same-shaped tile attached to the same end lands on the same grid
+		// spot. Among the spots left, the highest resulting end total wins
+		// -- the same choice DetermineBestMove()'s root scoring bonus
+		// credits. If the filter can't be applied (every number open, or
+		// no exact grid match), all the tile's spots stay eligible.
+		//
+		// With the exact board the advice also knows the placement's
+		// native end total (`expectedTotal`, kNoNativeTotal if unknown); a spot showing
+		// exactly that total is the advised one (e.g. [1|4] on a plain 4
+		// end vs. on a [4|4] end: same number, different totals).
+		int PickAdvisedCandidate(rage::scrThread* thread, std::uint32_t seat, std::int32_t handIndex, const DominoHandEval::Tile& tile,
+			std::int32_t endPip, const DominoAiPolicy::Candidate* candidates, std::uint32_t count, std::int32_t expectedTotal = DominoSearch::kNoNativeTotal)
+		{
+			std::array<bool, kCandidateCapacity> eligible{};
+			int matches = 0;
+			for (std::uint32_t i = 0; i < count; i++)
+			{
+				eligible[i] = candidates[i].hasPlacement && candidates[i].handIndex == handIndex;
+				if (eligible[i])
+					matches++;
+			}
+
+			if (matches > 1 && endPip >= 0)
+			{
+				std::array<std::int32_t, 7> open{};
+				std::uint32_t openCount = CurrentOpenEnds(thread, seat, open.data(), static_cast<std::uint32_t>(open.size()));
+				EndProbeCache cache;
+				std::array<bool, kCandidateCapacity> onEnd{};
+				int onEndCount = 0;
+				for (std::uint32_t i = 0; i < count; i++)
+				{
+					if (eligible[i] && CandidateEndPip(thread, seat, tile, candidates[i], open.data(), openCount, cache) == endPip)
+					{
+						onEnd[i] = true;
+						onEndCount++;
+					}
+				}
+				if (onEndCount > 0)
+					eligible = onEnd;
+#ifdef _DEBUG
+				static std::int32_t s_lastLoggedHandIndex = -1, s_lastLoggedOnEnd = -1;
+				if (s_lastLoggedHandIndex != handIndex || s_lastLoggedOnEnd != onEndCount)
+				{
+					Log::Write("Trace: PickAdvisedCandidate tile [{}|{}] end {}: {} spots, {} on the advised end{}",
+						tile.low, tile.high, endPip, matches, onEndCount, onEndCount == 0 ? " -- couldn't tell, keeping all spots" : "");
+					s_lastLoggedHandIndex = handIndex;
+					s_lastLoggedOnEnd = onEndCount;
+				}
+#endif
+			}
+
+			if (expectedTotal != DominoSearch::kNoNativeTotal)
+			{
+				for (std::uint32_t i = 0; i < count; i++)
+					if (eligible[i] && candidates[i].resultingEndTotal == expectedTotal)
+						return static_cast<int>(i);
+			}
+
+			int best = -1;
+			for (std::uint32_t i = 0; i < count; i++)
+				if (eligible[i] && (best < 0 || candidates[i].resultingEndTotal > candidates[static_cast<std::size_t>(best)].resultingEndTotal))
+					best = static_cast<int>(i);
+			return best;
+		}
+
 		// Computes the real, physical world position of the board slot
 		// where hand tile `handIndex` would actually land -- the direct
 		// production use of ComputeCandidateWorldPosition()'s decompile-
@@ -1911,10 +2316,20 @@ namespace DominoCheat
 		// values) is already called out separately via
 		// MoveRecommendation::hasAlternateEnd's own on-screen warning,
 		// not this function's job to gate on.
-		bool ComputeRecommendedBoardPosition(rage::scrThread* thread, std::uint32_t mySeatU, std::int32_t handIndex, Vector3& outPos)
+		//
+		// CHANGED (2026-09-25): "first matching candidate" ignored which
+		// end the advice chose. When the tile fits two different numbers
+		// the first spot could be the OTHER end -- a different move than
+		// the one advised -- and on All Fives two same-number ends can
+		// score differently (a double at an end counts both halves). Now
+		// PickAdvisedCandidate() keeps only the spots on the advised end
+		// and takes the highest resulting end total among them.
+		bool ComputeRecommendedBoardPosition(rage::scrThread* thread, std::uint32_t mySeatU, std::int32_t handIndex,
+			const DominoHandEval::Tile& tile, std::int32_t endPip, std::int32_t expectedTotal, Vector3& outPos)
 		{
 			std::array<DominoAiPolicy::Candidate, kCandidateCapacity> candidates{};
 			std::uint32_t count = QueryNativeCandidates(thread, mySeatU, candidates.data(), static_cast<std::uint32_t>(candidates.size()));
+			const int advised = PickAdvisedCandidate(thread, mySeatU, handIndex, tile, endPip, candidates.data(), count, expectedTotal);
 
 #ifdef _DEBUG
 			int matches = 0;
@@ -1930,7 +2345,7 @@ namespace DominoCheat
 #ifdef _DEBUG
 				matches++;
 #endif
-				if (!found)
+				if (!found && static_cast<int>(i) == advised)
 				{
 					outPos = ComputeCandidateWorldPosition(thread, c.gridF1, c.gridF2, c.gridOrientation);
 					found = true;
@@ -2042,7 +2457,6 @@ namespace DominoCheat
 
 	namespace
 	{
-
 		// Full-information search (DominoSearch.h) over every seat's REAL
 		// hand, the boneyard's known draw order, and the table's scores --
 		// see that header's own file comment for the evaluation (net
@@ -2088,8 +2502,12 @@ namespace DominoCheat
 				return best;
 			}
 
+			// Exact board first (BoardTracker); its open numbers replace the
+			// probe's. Cross-checked below against the game's own move list
+			// for my hand like the probe is.
+			const DominoSearch::Board* tracked = BoardTracker::Current();
 			std::array<std::int32_t, 7> ends{};
-			std::uint32_t endCount = DetermineOpenEnds(thread, mySeatU, ends.data(), static_cast<std::uint32_t>(ends.size()));
+			std::uint32_t endCount = CurrentOpenEnds(thread, mySeatU, ends.data(), static_cast<std::uint32_t>(ends.size()));
 			std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
 
 			// Build the freshness key + pure-logic search state from the
@@ -2157,7 +2575,16 @@ namespace DominoCheat
 				// No detected ends is normal on the opening move (every tile
 				// is a candidate). Only treat it as a miss if tiles are
 				// already on the board.
-				const bool boardHasTiles = endCount > 0 || FindAnyBoardOwnedTilePropHandle(thread) != 0;
+				//
+				// FIXED (2026-09-25): on an EMPTY board every synthetic
+				// double is playable, so the probe reports all 7 numbers
+				// open (seen live: "ends":[0,1,2,3,4,5,6] on the opening
+				// move), and the search modelled a 7-ended board instead of
+				// the opening. A real board never has more than 4 distinct
+				// open ends, so 7 with no tile on the table means empty.
+				const bool boardHasTiles = tracked ? tracked->placed : (FindAnyBoardOwnedTilePropHandle(thread) != 0 || (endCount > 0 && endCount < 7));
+				if (!boardHasTiles)
+					endCount = 0;
 				std::array<DominoAiPolicy::Candidate, kCandidateCapacity> nativeMoves{};
 				const std::uint32_t nativeCount = boardHasTiles
 					? QueryNativeCandidates(thread, mySeatU, nativeMoves.data(), static_cast<std::uint32_t>(nativeMoves.size()))
@@ -2173,7 +2600,7 @@ namespace DominoCheat
 					const DominoHandEval::Tile& tile = state.hands[mySeatU][static_cast<std::size_t>(c.handIndex)];
 					if (isDetected(tile.low) || isDetected(tile.high))
 						continue;
-					if (tile.low == tile.high && endCount < ends.size())
+					if (!tracked && tile.low == tile.high && endCount < ends.size())
 					{
 						ends[endCount++] = tile.low;
 						Log::Write("DetermineBestMove: open-end probe missed pip {} -- the game lists [{}|{}] as playable; added it", tile.low, tile.low, tile.high);
@@ -2185,6 +2612,8 @@ namespace DominoCheat
 							tile.low, tile.high);
 				}
 				s_loggedInconsistent = inconsistent;
+				if (inconsistent && tracked)
+					BoardTracker::Reset("the game lists a playable tile the exact board has no end for");
 				if (inconsistent)
 				{
 					CancelMoveAdvice();
@@ -2194,6 +2623,12 @@ namespace DominoCheat
 
 			for (std::uint32_t ei = 0; ei < endCount; ei++)
 				state.ends.pips[static_cast<std::size_t>(state.ends.count++)] = ends[ei];
+
+			if (tracked)
+			{
+				state.board = *tracked;
+				state.exactBoard = true;
+			}
 
 			// Undrawn boneyard in draw order (positions deckCursor..27 --
 			// the same read DrawBoneyardStatus() shows on screen). Only
@@ -2246,20 +2681,44 @@ namespace DominoCheat
 			// reports each of my candidates' exact resulting end total, so
 			// the points func_354 would credit me for playing that tile
 			// right now are known exactly -- see DominoSearch.h's own
-			// header comment. A tile that fits two ends gets its better
-			// total (the HUD names the tile; the end is the player's).
-			if (!DominoAiPolicy::AlwaysUsesPipPriority(state.rules) && state.rules != DominoAiPolicy::Rules::Unknown)
+			// header comment. Credited per END (CandidateEndPip()): a tile
+			// that fits two numbers can score on one and not the other,
+			// and the marker shows the advised end, so crediting the
+			// better of the two (the pre-2026-09-25 behavior) could
+			// advise a move for points only the other end scores. If the
+			// end can't be told, the candidate's points go to both of the
+			// tile's numbers (the old behavior, for that tile only).
+			// Not needed with the exact board: the search scores every
+			// placement itself.
+			if (!state.exactBoard && !DominoAiPolicy::AlwaysUsesPipPriority(state.rules) && state.rules != DominoAiPolicy::Rules::Unknown)
 			{
 				std::array<DominoAiPolicy::Candidate, kCandidateCapacity> candidates{};
 				std::uint32_t count = QueryNativeCandidates(thread, mySeatU, candidates.data(), static_cast<std::uint32_t>(candidates.size()));
+				EndProbeCache cache;
 				for (std::uint32_t i = 0; i < count; i++)
 				{
 					const DominoAiPolicy::Candidate& candidate = candidates[i];
 					if (!candidate.hasPlacement || candidate.handIndex < 0 || candidate.handIndex >= state.handCounts[mySeatU])
 						continue;
 					std::int32_t points = DominoAiPolicy::ScoringPoints(state.rules, candidate.resultingEndTotal);
-					auto& slot = state.rootMoveBonusPoints[static_cast<std::size_t>(candidate.handIndex)];
-					slot = std::max(slot, points);
+					if (points <= 0)
+						continue;
+					auto& slots = state.rootMoveBonusPoints[static_cast<std::size_t>(candidate.handIndex)];
+					const DominoHandEval::Tile& tile = state.hands[mySeatU][static_cast<std::size_t>(candidate.handIndex)];
+					if (endCount == 0)
+					{
+						std::int32_t& slot = slots[static_cast<std::size_t>(DominoSearch::RootBonusSlot(-1))];
+						slot = (std::max)(slot, points);
+						continue;
+					}
+					std::int32_t endPip = CandidateEndPip(thread, mySeatU, tile, candidate, ends.data(), endCount, cache);
+					for (std::int32_t pip : { tile.low, tile.high })
+					{
+						if (endPip >= 0 && pip != endPip)
+							continue;
+						std::int32_t& slot = slots[static_cast<std::size_t>(DominoSearch::RootBonusSlot(pip))];
+						slot = (std::max)(slot, points);
+					}
 				}
 			}
 			state.turnSeat = mySeat;
@@ -2285,6 +2744,13 @@ namespace DominoCheat
 					best.exact = rec.exact;
 					best.completedDepth = rec.completedDepth;
 					best.outcome = rec.outcome;
+					best.nativeTotal = rec.nativeTotal;
+#ifdef _DEBUG
+					g_lastDecision.valid = true;
+					g_lastDecision.mySeat = mySeat;
+					g_lastDecision.state = key.state;
+					g_lastDecision.rec = rec;
+#endif
 					// Debug raw-panel diagnostic only -- the Release HUD's
 					// SAFE/RISKY/VERY RISKY qualifier is keyed on the
 					// search verdict now (DrawMoveSafetyStatus()).
@@ -3008,11 +3474,496 @@ namespace DominoCheat
 			return isMySeat ? 4 : 3;
 		}
 
+		// ---- Live-test checks (2026-09-25) --------------------------------
+		// Each one settles a statically-traced-only read by logging it next
+		// to something the player can see (the scoreboard, the table's
+		// rules, whose turn it is) or checking it against a second,
+		// independently-read source (a drawn tile vs. the boneyard's
+		// draw order). Grep DominoCheat.log for "CHECK" to find them all.
+
+		std::array<bool, kMaxSeats> ReadOccupiedSeats(rage::scrThread* thread)
+		{
+			std::array<bool, kMaxSeats> occupied{};
+			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+				occupied[seat] = SeatLocal(thread, seat).At(kSeatOccupancyOffset).AsInt32() == static_cast<std::int32_t>(seat);
+			return occupied;
+		}
+
+		// Rules, buy-in, pot, points target and every seat's score -- all
+		// RAW (unfiltered) so an implausible read shows up as itself
+		// instead of being silently dropped the way ReadPointsTarget() does
+		// for the search. Compare against the table's rules and the
+		// between-rounds scoreboard.
+		void LogRulesAndScores(rage::scrThread* thread, std::string_view prefix)
+		{
+			std::int32_t ruleHash = RoundLocal(thread).At(kRulesHolderFieldOffset).At(3).AsInt32();
+			std::int32_t buyIn = RoundLocal(thread).At(kRulesHolderFieldOffset).At(6).AsInt32();
+			std::int32_t rawTarget = RoundLocal(thread).At(kRulesHolderFieldOffset).At(kPointsTargetFieldOffset).At(0, 1).AsInt32();
+			std::int32_t pot = SeatsHolderLocal(thread).At(5).AsInt32();
+
+			std::ostringstream seats;
+			std::array<bool, kMaxSeats> occupied = ReadOccupiedSeats(thread);
+			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+			{
+				if (!occupied[seat])
+					continue;
+				ScriptLocal seatLocal = SeatLocal(thread, seat);
+				seats << "seat" << seat << "[score=" << seatLocal.At(kSeatScoreOffset).AsInt32()
+					<< " buyIn=" << seatLocal.At(kSeatBuyInOffset).AsInt32()
+					<< " tiles=" << seatLocal.At(kSeatHandCountOffset).AsInt32() << "] ";
+			}
+
+			Log::Write("{} CHECK rules: {} (raw hash {}) -- compare with the table's rules", prefix,
+				DominoAiPolicy::RulesName(DominoAiPolicy::DecodeRules(ruleHash)), ruleHash);
+			Log::Write("{} CHECK points target: {} (raw; the search {} it) -- compare with the table's target score", prefix,
+				rawTarget, ReadPointsTarget(thread) != 0 ? "uses" : "REJECTS");
+			Log::Write("{} CHECK scores: {}-- compare with the scoreboard shown between rounds", prefix, seats.str());
+			Log::Write("{} CHECK buy-in: table={} cents, pot={} cents -- compare with the buy-in the table asked for", prefix, buyIn, pot);
+		}
+
+		// Every occupied hand plus the undrawn boneyard: each tile must be
+		// a valid double-six tile and appear at most once across all of
+		// them. Returns true if it all checks out.
+		bool CheckTileAccounting(rage::scrThread* thread, std::ostringstream& problems)
+		{
+			std::array<int, DominoHandEval::kTileSetSize> seen{};
+			bool ok = true;
+			auto note = [&](const DominoHandEval::Tile& tile, std::string_view where) {
+				if (!tile.IsValid())
+				{
+					problems << "invalid tile (" << tile.low << "," << tile.high << ") in " << where << "; ";
+					ok = false;
+					return;
+				}
+				std::int32_t idx = DominoHandEval::EncodeTile(tile.low, tile.high);
+				if (idx < 0 || idx >= static_cast<std::int32_t>(DominoHandEval::kTileSetSize) || ++seen[static_cast<std::size_t>(idx)] > 1)
+				{
+					problems << "duplicate " << FormatTile(tile) << " in " << where << "; ";
+					ok = false;
+				}
+			};
+
+			std::array<bool, kMaxSeats> occupied = ReadOccupiedSeats(thread);
+			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+			{
+				if (!occupied[seat])
+					continue;
+				std::int32_t handCount = SeatLocal(thread, seat).At(kSeatHandCountOffset).AsInt32();
+				if (handCount < 0 || handCount > static_cast<std::int32_t>(kMaxHandCapacity))
+				{
+					problems << "seat " << seat << " hand count " << handCount << " out of range; ";
+					ok = false;
+					continue;
+				}
+				std::string where = "seat " + std::to_string(seat);
+				for (std::int32_t i = 0; i < handCount; i++)
+					note(ReadHandTile(thread, seat, static_cast<std::uint32_t>(i)), where);
+			}
+
+			std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
+			if (deckCursor >= 0 && deckCursor <= static_cast<std::int32_t>(kTileSetSize))
+				for (std::int32_t i = deckCursor; i < static_cast<std::int32_t>(kTileSetSize); i++)
+					note(ReadBoneyardTile(thread, i), "boneyard");
+			return ok;
+		}
+
+		// Called when a seat's hand gained tiles mid-round. The tiles it
+		// drew must be exactly the boneyard's next tiles in draw order
+		// ([previous deck cursor, current deck cursor)), and a hand past the
+		// 7-tile deal must still read as real, unique tiles.
+		void LogDrawCheck(rage::scrThread* thread, std::uint32_t seat, const std::array<int, DominoHandEval::kTileSetSize>& drawnCounts,
+			std::int32_t handCount, std::int32_t prevDeckCursor, std::int32_t deckCursor)
+		{
+			std::array<int, DominoHandEval::kTileSetSize> expectedCounts{};
+			std::ostringstream expectedLine;
+			if (prevDeckCursor >= 0 && prevDeckCursor <= deckCursor && deckCursor <= static_cast<std::int32_t>(kTileSetSize))
+			{
+				for (std::int32_t i = prevDeckCursor; i < deckCursor; i++)
+				{
+					DominoHandEval::Tile tile = ReadBoneyardTile(thread, i);
+					expectedLine << FormatTile(tile) << " ";
+					if (tile.IsValid())
+						expectedCounts[static_cast<std::size_t>(DominoHandEval::EncodeTile(tile.low, tile.high))]++;
+				}
+			}
+
+			bool match = expectedCounts == drawnCounts;
+			Log::Write("Trace: CHECK draw: seat {} drew, deck cursor {} -> {}, boneyard order says [{}] -- {}",
+				seat, prevDeckCursor, deckCursor, expectedLine.str(), match ? "MATCH" : "MISMATCH");
+
+			if (handCount > static_cast<std::int32_t>(kHandSize))
+			{
+				std::ostringstream hand;
+				for (std::int32_t i = 0; i < handCount; i++)
+					hand << FormatTile(ReadHandTile(thread, seat, static_cast<std::uint32_t>(i))) << " ";
+				std::ostringstream problems;
+				bool ok = CheckTileAccounting(thread, problems);
+				Log::Write("Trace: CHECK big hand: seat {} holds {} tiles: {}-- {}", seat, handCount, hand.str(),
+					ok ? std::string("all valid and unique across every hand + boneyard") : ("PROBLEM: " + problems.str()));
+			}
+		}
+
+		// Turn passed from `fromSeat` to `toSeat` within a round: must be
+		// what DominoSearch's own NextSeat() (func_324's 0 -> 2 -> 1 -> 3
+		// order, skipping empty seats) predicts -- the exact function the
+		// search simulates with, not a re-implementation of it.
+		void LogTurnOrderCheck(std::int32_t fromSeat, std::int32_t toSeat, const std::array<bool, kMaxSeats>& occupied)
+		{
+			DominoSearch::GameState state;
+			int occupiedCount = 0;
+			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+			{
+				state.occupied[seat] = occupied[seat];
+				if (occupied[seat])
+					occupiedCount++;
+			}
+			int expected = DominoSearch::detail::NextSeat(state, fromSeat);
+			Log::Write("Trace: CHECK turn order: seat {} -> seat {}, expected seat {} ({} seats) -- {}{}",
+				fromSeat, toSeat, expected, occupiedCount, expected == toSeat ? "MATCH" : "MISMATCH",
+				occupiedCount <= 2 ? " (2-seat table: trivially alternates, sit with 2+ opponents to really test this)" : "");
+		}
+
+		// New deal detected: everything a player can compare against the
+		// screen at the start of a round, plus which raw seat you're in and
+		// which on-screen row each opponent's tiles are drawn in.
+		void LogRoundStart(rage::scrThread* thread, std::int32_t mySeat, std::int32_t occupiedCount)
+		{
+			Log::Write("Trace: ==== new deal: {} seats, you are raw seat {} ====", occupiedCount, mySeat);
+			LogRulesAndScores(thread, "Trace:");
+
+			int denseRow[kMaxSeats];
+			ComputeDenseRowForSeat(thread, mySeat, denseRow);
+			std::ostringstream rows;
+			for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+				if (denseRow[seat] != 0)
+					rows << "seat " << seat << " (" << SeatLocal(thread, seat).At(kSeatHandCountOffset).AsInt32() << " tiles) -> row " << denseRow[seat] << "; ";
+			Log::Write("Trace: CHECK opponent rows (row 1 = bottom): {}-- {}", rows.str(),
+				mySeat == 0 ? "you're in seat 0 again; a different raw seat is what's still untested"
+					: "NOT seat 0 -- check each row sits next to the right opponent");
+		}
+
+		// Frame time while the advisor thinks (your decision window) vs.
+		// the rest of the game. The search runs on its own thread, so a
+		// real cost would show up as longer/hitchier frames, not as the
+		// game blocking. Deltas over 1 s (pause menu, loading, F12 probes)
+		// are ignored. Note Debug is unoptimized, so this is a worst case.
+		constexpr double kFrameHitchMs = 50.0;
+
+		void UpdateFrameTimeStats(bool inDecisionNow)
+		{
+			DebugTraceState& t = g_debugTrace;
+			auto now = std::chrono::steady_clock::now();
+			if (t.haveLastTick)
+			{
+				double ms = std::chrono::duration<double, std::milli>(now - t.lastTick).count();
+				if (ms < 1000.0)
+				{
+					if (inDecisionNow)
+					{
+						t.decisionFrames++;
+						t.decisionSumMs += ms;
+						t.decisionMaxMs = (std::max)(t.decisionMaxMs, ms);
+						if (ms > kFrameHitchMs)
+							t.decisionHitches++;
+					}
+					else
+					{
+						t.otherFrames++;
+						t.otherSumMs += ms;
+					}
+				}
+			}
+			t.lastTick = now;
+			t.haveLastTick = true;
+
+			if (t.inMyDecision && !inDecisionNow && t.decisionFrames > 0)
+			{
+				double otherAvg = t.otherFrames > 0 ? t.otherSumMs / t.otherFrames : 0.0;
+				Log::Write("Trace: CHECK frame time while advisor ran: {:.0f} frames, avg {:.1f} ms, worst {:.1f} ms, {} over {:.0f} ms; rest of game avg {:.1f} ms (WallClockBudget={} ms)",
+					t.decisionFrames, t.decisionSumMs / t.decisionFrames, t.decisionMaxMs, t.decisionHitches, kFrameHitchMs,
+					otherAvg, Config::Get().AdvisorWallClockBudgetMs);
+				t.decisionFrames = t.decisionSumMs = t.decisionMaxMs = 0.0;
+				t.otherFrames = t.otherSumMs = 0.0;
+				t.decisionHitches = 0;
+			}
+			t.inMyDecision = inDecisionNow;
+		}
+
+		// ---- Game record (2026-09-25) -------------------------------------
+		// DominoCheat_games.jsonl next to DominoCheat.log: one decision line
+		// per move I made with advice showing, one npcMove line per
+		// predicted opponent play, one round line per finished round. See
+		// GameRecord.h for the format and how a line becomes a test case in
+		// tests/fixtures/games.jsonl. Rolls over at kRollBytes to
+		// DominoCheat_games.1.jsonl (one old file kept). Same approach as
+		// BlackjackCheat's round log.
+		namespace GameRecorder
+		{
+			constexpr std::uintmax_t kRollBytes = 4 * 1024 * 1024;
+
+			std::string Timestamp()
+			{
+				SYSTEMTIME t;
+				GetLocalTime(&t);
+				std::ostringstream out;
+				out << std::setfill('0')
+					<< std::setw(4) << t.wYear << '-' << std::setw(2) << t.wMonth << '-' << std::setw(2) << t.wDay
+					<< 'T' << std::setw(2) << t.wHour << ':' << std::setw(2) << t.wMinute << ':' << std::setw(2) << t.wSecond
+					<< '.' << std::setw(3) << t.wMilliseconds;
+				return out.str();
+			}
+
+			const std::wstring& GamesPath()
+			{
+				static const std::wstring path = LogFallback::Resolve(
+					LogFallback::ModuleDirectory(), L"DominoCheat_games.jsonl", LogFallback::FallbackDirectory()).path;
+				return path;
+			}
+
+			void AppendLine(const std::string& line)
+			{
+				const std::filesystem::path path(GamesPath());
+				if (path.empty())
+					return;
+
+				std::error_code ec;
+				const std::uintmax_t size = std::filesystem::file_size(path, ec);
+				if (!ec && size >= kRollBytes)
+				{
+					std::filesystem::path rolled = path;
+					rolled.replace_extension(L".1.jsonl");
+					std::filesystem::remove(rolled, ec);
+					std::filesystem::rename(path, rolled, ec);
+				}
+
+				std::ofstream file(path, std::ios::app);
+				file << line << '\n';
+			}
+
+			// I just played `played` from `handBefore`. Written only when the
+			// advice on screen was for exactly that hand.
+			void WriteDecision(rage::scrThread* thread, std::uint32_t seat, const DebugHandSnapshot& handBefore,
+				const DominoHandEval::Tile& played, std::int32_t handCountNow)
+			{
+				DebugDecision& d = g_lastDecision;
+				if (!d.valid || d.mySeat != static_cast<std::int32_t>(seat) || d.state.handCounts[seat] != handBefore.count ||
+					!std::equal(handBefore.tiles.begin(), handBefore.tiles.begin() + handBefore.count, d.state.hands[seat].begin()))
+				{
+					d.valid = false;
+					return;
+				}
+
+				GameRecord::JsonLine line;
+				line.Add("type", "decision").Add("id", Timestamp());
+				GameRecord::WriteState(line, d.state, d.mySeat);
+				line.AddTile("rec", d.rec.tile)
+					.Add("recEnd", static_cast<std::int64_t>(d.rec.endPip))
+					.Add("recResult", static_cast<std::int64_t>(d.rec.resultPip))
+					.Add("recOutcome", DominoSearch::OutcomeName(d.rec.outcome))
+					.Add("recPoints", static_cast<std::int64_t>(d.rec.points))
+					.Add("recExact", d.rec.exact)
+					.Add("recDepth", static_cast<std::int64_t>(d.rec.completedDepth));
+
+				bool followed = played == d.rec.tile;
+				line.AddTile("played", played).Add("followed", followed);
+
+				// Which end did it go on? Only checkable while I still hold
+				// tiles (the open-end probe tests against my own hand).
+				if (handCountNow > 0)
+				{
+					std::array<std::int32_t, 7> postPips{};
+					std::uint32_t postCount = DetermineOpenEnds(thread, seat, postPips.data(), static_cast<std::uint32_t>(postPips.size()));
+					line.Add("postEnds", postPips.data(), static_cast<int>(postCount));
+					if (followed && d.rec.endPip >= 0)
+					{
+						bool resultPresent = std::find(postPips.begin(), postPips.begin() + postCount, d.rec.resultPip) != postPips.begin() + postCount;
+						line.Add("wrongEnd", !resultPresent);
+						if (!resultPresent)
+							g_debugTrace.roundWrongEnds++;
+					}
+				}
+
+				AppendLine(line.Str());
+				g_debugTrace.roundDecisions++;
+				if (followed)
+					g_debugTrace.roundFollowed++;
+				d.valid = false;
+			}
+
+			void WriteNpcMove(std::uint32_t seat, const DebugPrediction& pred, const DominoHandEval::Tile& played)
+			{
+				if (!pred.hasCapture)
+					return;
+
+				bool match = played == pred.tile;
+				GameRecord::JsonLine line;
+				line.Add("type", "npcMove").Add("id", Timestamp())
+					.Add("rules", DominoAiPolicy::RulesName(pred.rules))
+					.Add("seat", static_cast<std::int64_t>(seat))
+					.AddTiles("hand", pred.hand.data(), pred.handCount)
+					.Add("ends", pred.ends.data(), pred.endCount);
+				GameRecord::WriteCandidates(line, pred.candidates.data(), pred.candidateCount);
+				GameRecord::WriteBoard(line, pred.board, pred.hasBoard);
+
+				// The exact board's end totals vs. the game's own for every
+				// candidate: each native f_4 must be one of the totals the
+				// model gives that tile on some end it fits.
+				if (pred.hasBoard)
+				{
+					int checked = 0, mismatched = 0;
+					std::ostringstream bad;
+					for (int i = 0; i < pred.candidateCount; i++)
+					{
+						const DominoAiPolicy::Candidate& c = pred.candidates[static_cast<std::size_t>(i)];
+						if (!c.hasPlacement || c.handIndex < 0 || c.handIndex >= pred.handCount)
+							continue;
+						const DominoHandEval::Tile& tile = pred.hand[static_cast<std::size_t>(c.handIndex)];
+						DominoSearch::GameState probe;
+						probe.exactBoard = true;
+						probe.board = pred.board;
+						probe.hands[0][0] = tile;
+						probe.handCounts[0] = 1;
+						bool found = false;
+						for (const DominoSearch::Move& mv : DominoSearch::detail::LegalMoves(probe, 0))
+						{
+							DominoSearch::Board after = DominoSearch::PlaceOnBoard(pred.board, tile, mv.target, mv.endPip);
+							if (DominoSearch::NativeEndTotal(pred.board, after, mv.target) == c.resultingEndTotal)
+								found = true;
+						}
+						checked++;
+						if (!found)
+						{
+							mismatched++;
+							bad << FormatTile(tile) << "=" << c.resultingEndTotal << " ";
+						}
+					}
+					Log::Write("Trace: CHECK board model vs game end totals: seat {} {} of {} candidates match{}{}", seat,
+						checked - mismatched, checked, mismatched == 0 ? " -- MATCH" : " -- MISMATCH: ", bad.str());
+				}
+				line.AddTile("predicted", pred.tile).AddTile("played", played).Add("match", match);
+				AppendLine(line.Str());
+
+				g_debugTrace.roundNpcPredictions++;
+				if (match)
+					g_debugTrace.roundNpcMatches++;
+			}
+
+			// Called at a new deal: closes the previous round (if one was
+			// seen from its own deal) and opens the new one.
+			void OnNewDeal(rage::scrThread* thread, std::int32_t mySeat, const std::array<bool, kMaxSeats>& occupied)
+			{
+				DebugTraceState& t = g_debugTrace;
+				std::array<std::int32_t, kMaxSeats> scoresNow{};
+				for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+					if (occupied[seat])
+						scoresNow[seat] = ReadSeatScore(thread, seat);
+
+				if (t.roundValid && t.roundOccupied == occupied && t.roundMySeat == mySeat)
+				{
+					GameRecord::JsonLine line;
+					line.Add("type", "round").Add("id", Timestamp())
+						.Add("rules", DominoAiPolicy::RulesName(t.roundRules))
+						.Add("mySeat", static_cast<std::int64_t>(t.roundMySeat));
+					std::int32_t occ[kMaxSeats]{};
+					bool gameOver = false;
+					for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+					{
+						occ[seat] = occupied[seat] ? 1 : 0;
+						if (occupied[seat] && scoresNow[seat] < t.roundScoresBefore[seat])
+							gameOver = true;
+					}
+					line.Add("occupied", occ, static_cast<int>(kMaxSeats));
+					static constexpr std::string_view kFinalKeys[kMaxSeats] = { "final0", "final1", "final2", "final3" };
+					for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+					{
+						const DebugHandSnapshot& h = t.roundFinalHands[seat];
+						line.AddTiles(kFinalKeys[seat], h.tiles.data(), occupied[seat] && h.count > 0 ? h.count : 0);
+					}
+					line.Add("scoresBefore", t.roundScoresBefore.data(), static_cast<int>(kMaxSeats))
+						.Add("scoresAfter", scoresNow.data(), static_cast<int>(kMaxSeats))
+						.Add("gameOver", gameOver)
+						.Add("pointsTarget", static_cast<std::int64_t>(t.roundPointsTarget))
+						.Add("buyIn", static_cast<std::int64_t>(t.roundBuyIn))
+						.Add("decisions", static_cast<std::int64_t>(t.roundDecisions))
+						.Add("followed", static_cast<std::int64_t>(t.roundFollowed))
+						.Add("wrongEnds", static_cast<std::int64_t>(t.roundWrongEnds))
+						.Add("npcPredictions", static_cast<std::int64_t>(t.roundNpcPredictions))
+						.Add("npcMatches", static_cast<std::int64_t>(t.roundNpcMatches));
+					AppendLine(line.Str());
+				}
+
+				t.roundValid = mySeat >= 0;
+				t.roundMySeat = mySeat;
+				t.roundRules = ReadAiRules(thread);
+				t.roundOccupied = occupied;
+				t.roundScoresBefore = scoresNow;
+				t.roundPointsTarget = RoundLocal(thread).At(kRulesHolderFieldOffset).At(kPointsTargetFieldOffset).At(0, 1).AsInt32();
+				t.roundBuyIn = RoundLocal(thread).At(kRulesHolderFieldOffset).At(6).AsInt32();
+				t.roundFinalHands = {};
+				t.roundDecisions = t.roundFollowed = t.roundWrongEnds = 0;
+				t.roundNpcPredictions = t.roundNpcMatches = 0;
+			}
+		}
+
 		void LogDebugTrace(rage::scrThread* thread)
 		{
 			std::int32_t turnSeat = RoundLocal(thread).At(kCurrentTurnSeatFieldOffset).AsInt32();
 			std::int32_t turnSubState = RoundLocal(thread).At(kTurnSubStateFieldOffset).AsInt32();
 			std::int32_t mySeat = FindMySeatByPed(thread);
+			std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
+
+			// A new dominoes script thread means a different table (or a
+			// reloaded save): nothing carries over to its first deal. (Not a
+			// time gap -- the trace can go quiet for ~20 s while the
+			// between-rounds scoreboard shows, which dropped a round line.)
+			if (thread->m_Context.m_ThreadId != g_debugTrace.lastThreadId)
+			{
+				g_debugTrace.lastThreadId = thread->m_Context.m_ThreadId;
+				g_debugTrace.roundValid = false;
+				g_debugTrace.lastValidTurnSeat = -1;
+				g_lastDecision.valid = false;
+			}
+
+			UpdateFrameTimeStats(mySeat >= 0 && turnSeat == mySeat && turnSubState == 4);
+
+			// New-deal detection: every occupied seat back at exactly 7
+			// tiles, the deck cursor exactly at 7 per seat (a mid-round draw
+			// would push it past that), and more tiles in hands than last
+			// tick. The first tick at a table counts too.
+			bool newDeal = false;
+			{
+				std::array<bool, kMaxSeats> occupied = ReadOccupiedSeats(thread);
+				std::int32_t occupiedCount = 0, handTotal = 0;
+				bool allFullHands = true;
+				for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+				{
+					if (!occupied[seat])
+						continue;
+					occupiedCount++;
+					std::int32_t count = SeatLocal(thread, seat).At(kSeatHandCountOffset).AsInt32();
+					handTotal += count;
+					if (count != static_cast<std::int32_t>(kHandSize))
+						allFullHands = false;
+				}
+				newDeal = occupiedCount > 0 && allFullHands && deckCursor == occupiedCount * static_cast<std::int32_t>(kHandSize) &&
+					handTotal > g_debugTrace.lastHandTotal;
+				if (newDeal)
+				{
+					GameRecorder::OnNewDeal(thread, mySeat, occupied);
+					LogRoundStart(thread, mySeat, occupiedCount);
+					g_debugTrace.lastValidTurnSeat = -1; // the opening seat isn't a successor of anyone
+				}
+				g_debugTrace.lastHandTotal = handTotal;
+
+				if (turnSeat >= 0 && turnSeat < static_cast<std::int32_t>(kMaxSeats) && turnSeat != g_debugTrace.lastValidTurnSeat)
+				{
+					if (g_debugTrace.lastValidTurnSeat >= 0)
+						LogTurnOrderCheck(g_debugTrace.lastValidTurnSeat, turnSeat, occupied);
+					else
+						Log::Write("Trace: opening turn: seat {}", turnSeat);
+					g_debugTrace.lastValidTurnSeat = turnSeat;
+				}
+			}
 
 			if (turnSeat != g_debugTrace.lastTurnSeat)
 				LogFullTableState(thread, turnSeat, mySeat);
@@ -3081,6 +4032,11 @@ namespace DominoCheat
 				else
 				{
 					pred = PredictOpponentMove(thread, static_cast<std::uint32_t>(turnSeat));
+					if (const DominoSearch::Board* tracked = BoardTracker::Current())
+					{
+						pred.hasBoard = true;
+						pred.board = *tracked;
+					}
 				}
 
 				if (pred.valid)
@@ -3125,6 +4081,7 @@ namespace DominoCheat
 					CountTilesByValue(current.data(), handCount, newCounts);
 
 					std::ostringstream removedLine, addedLine;
+					std::array<int, DominoHandEval::kTileSetSize> drawnCounts{};
 					DominoHandEval::Tile lastRemoved;
 					bool anyRemoved = false;
 					for (int idx = 0; idx < DominoHandEval::kTileSetSize; idx++)
@@ -3140,6 +4097,7 @@ namespace DominoCheat
 						}
 						else if (diff > 0)
 						{
+							drawnCounts[static_cast<std::size_t>(idx)] = diff;
 							DominoHandEval::Tile t = DominoHandEval::DecodeTile(idx);
 							for (int n = 0; n < diff; n++)
 								addedLine << FormatTile(t) << " ";
@@ -3153,6 +4111,17 @@ namespace DominoCheat
 					if (!addedLine.str().empty())
 						line << ", drew " << addedLine.str();
 					Log::Write("{}", line.str());
+
+					if (!addedLine.str().empty() && !newDeal)
+						LogDrawCheck(thread, seat, drawnCounts, handCount, g_debugTrace.lastDeckCursor, deckCursor);
+
+					if (anyRemoved && !newDeal)
+					{
+						if (static_cast<std::int32_t>(seat) == mySeat)
+							GameRecorder::WriteDecision(thread, seat, snap, lastRemoved, handCount);
+						else if (g_debugTrace.pending[seat].valid)
+							GameRecorder::WriteNpcMove(seat, g_debugTrace.pending[seat], lastRemoved);
+					}
 
 					// Only a PLAY (a tile removed) resolves a pending
 					// prediction -- a draw alone (hand grew, nothing
@@ -3196,6 +4165,20 @@ namespace DominoCheat
 				snap.count = handCount;
 				for (std::int32_t i = 0; i < handCount; i++)
 					snap.tiles[i] = current[i];
+			}
+
+			g_debugTrace.lastDeckCursor = deckCursor;
+
+			// Keep the round's final hands for its round line: the last tick
+			// that still had tiles in hand (a between-rounds clear-out never
+			// overwrites them).
+			if (!newDeal)
+			{
+				int tilesInHands = 0;
+				for (const DebugHandSnapshot& h : g_debugTrace.hands)
+					tilesInHands += h.count > 0 ? h.count : 0;
+				if (tilesInHands > 0)
+					g_debugTrace.roundFinalHands = g_debugTrace.hands;
 			}
 		}
 #endif
@@ -3405,7 +4388,7 @@ namespace DominoCheat
 						{
 							std::int32_t boardRefHandle = FindAnyBoardOwnedTilePropHandle(thread);
 							Vector3 boardPos{};
-							if (boardRefHandle != 0 && ComputeRecommendedBoardPosition(thread, static_cast<std::uint32_t>(mySeat), rec.handIndex, boardPos))
+							if (boardRefHandle != 0 && ComputeRecommendedBoardPosition(thread, static_cast<std::uint32_t>(mySeat), rec.handIndex, rec.tile, rec.endPip, rec.nativeTotal, boardPos))
 							{
 								boardPos.z = ENTITY::GET_ENTITY_COORDS(boardRefHandle, true, true).z;
 								DrawWorldMarkerAtPosition(boardPos, Localization::PlayHereMarker());
@@ -3422,6 +4405,7 @@ namespace DominoCheat
 		if (!Enabled)
 		{
 			CancelMoveAdvice();
+			BoardTracker::Invalidate();
 			return;
 		}
 
@@ -3429,8 +4413,11 @@ namespace DominoCheat
 		if (!thread)
 		{
 			CancelMoveAdvice();
+			BoardTracker::Invalidate();
 			return;
 		}
+
+		BoardTracker::Update(thread);
 
 		const auto& cfg = Config::Get();
 		int mySeat = FindMySeatByPed(thread);
@@ -3509,6 +4496,56 @@ namespace DominoCheat
 				mySeat, rec.handIndex, FormatTile(rec.tile), rec.endPip, rec.resultPip, rec.opponentRespondCount,
 				DominoSearch::OutcomeName(rec.outcome), rec.exact ? "" : "~", rec.points, rec.exact, rec.completedDepth);
 		}
+	}
+
+	void ProbeRulesAndScores()
+	{
+		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
+		if (!thread)
+		{
+			Log::Write("DominoCheat::ProbeRulesAndScores: dominoes_sp not running");
+			return;
+		}
+
+		LogRulesAndScores(thread, "DominoCheat::ProbeRulesAndScores:");
+	}
+
+	void ProbeSeatHands()
+	{
+		rage::scrThread* thread = GamePointers::FindScriptThread(DominoesScriptHash());
+		if (!thread)
+		{
+			Log::Write("DominoCheat::ProbeSeatHands: dominoes_sp not running");
+			return;
+		}
+
+		std::int32_t mySeat = FindMySeatByPed(thread);
+		std::array<bool, kMaxSeats> occupied = ReadOccupiedSeats(thread);
+		for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
+		{
+			if (!occupied[seat])
+				continue;
+			std::int32_t handCount = SeatLocal(thread, seat).At(kSeatHandCountOffset).AsInt32();
+			std::int32_t shown = (std::clamp)(handCount, 0, static_cast<std::int32_t>(kMaxHandCapacity));
+			std::ostringstream hand;
+			for (std::int32_t i = 0; i < shown; i++)
+				hand << FormatTile(ReadHandTile(thread, seat, static_cast<std::uint32_t>(i))) << " ";
+			Log::Write("DominoCheat::ProbeSeatHands: seat {}{} holds {} tiles: {}", seat,
+				static_cast<std::int32_t>(seat) == mySeat ? " (you)" : "", handCount, hand.str());
+		}
+
+		std::int32_t deckCursor = RoundLocal(thread).At(kDeckCursorFieldOffset).AsInt32();
+		std::ostringstream boneyard;
+		if (deckCursor >= 0 && deckCursor <= static_cast<std::int32_t>(kTileSetSize))
+			for (std::int32_t i = deckCursor; i < static_cast<std::int32_t>(kTileSetSize); i++)
+				boneyard << FormatTile(ReadBoneyardTile(thread, i)) << " ";
+		Log::Write("DominoCheat::ProbeSeatHands: deck cursor {}, boneyard in draw order: {}", deckCursor,
+			boneyard.str().empty() ? std::string("(empty)") : boneyard.str());
+
+		std::ostringstream problems;
+		bool ok = CheckTileAccounting(thread, problems);
+		Log::Write("DominoCheat::ProbeSeatHands: CHECK tiles: {} -- compare the hands above with the tiles on screen",
+			ok ? std::string("all valid and unique across every hand + boneyard") : ("PROBLEM: " + problems.str()));
 	}
 
 	// Diagnostic: reads Scene.f_6 (kSceneDominoSkinFieldOffset -- see its

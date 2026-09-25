@@ -1,0 +1,7 @@
+# Recorded games replayed by tests/DominoHandEvalTests.cpp (TestRecordedGames).
+# Copy lines from DominoCheat_games.jsonl (next to DominoCheat.log, Debug build) and add
+# "expectTile":[low,high] -- decision: what FindBestMove() must recommend (optional "expectEnd");
+# npcMove: what the scripted-AI model must pick, usually a copy of "played". Add a "note" saying why.
+# Lines starting with # and lines with no expect* key are skipped. Format: src/GameRecord.h.
+{"type":"decision","id":"synthetic-1","note":"synthetic: playing the last tile wins","mySeat":0,"rules":"Block","occupied":[1,1,0,0],"hand0":[6,6],"hand1":[0,1,2,3],"hand2":[],"hand3":[],"ends":[6,2],"boneyard":[],"scores":[0,0,0,0],"pointsTarget":0,"rootBonus":[0],"passStreak":0,"expectTile":[6,6],"expectEnd":6}
+{"type":"npcMove","id":"synthetic-2","note":"synthetic: All Fives takes the last equal-scoring candidate","rules":"All Fives","seat":1,"hand":[0,1,6,6,2,4,3,3],"ends":[],"candHand":[1,0,2,3],"candPlaced":[1,1,1,1],"candEndTotal":[7,5,10,10],"candGrid":[0,0,0,0,0,0,0,0,0,0,0,0],"predicted":[3,3],"played":[3,3],"match":true,"expectTile":[3,3]}

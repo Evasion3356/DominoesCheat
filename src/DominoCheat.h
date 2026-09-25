@@ -66,6 +66,19 @@ namespace DominoCheat
 	// Wired to the F12 menu's "Probe Best Move" item.
 	void ProbeBestMove();
 
+	// Diagnostic: logs the table's rules, points target, buy-in, pot and
+	// every occupied seat's score, all as raw reads, for comparison with
+	// the table's rules and the between-rounds scoreboard. The same lines
+	// are logged automatically at every new deal. Wired to the F12 menu's
+	// "Probe Rules & Scores" item.
+	void ProbeRulesAndScores();
+
+	// Diagnostic: logs every occupied seat's full hand (up to 19 tiles),
+	// the undrawn boneyard in draw order, and whether every tile is valid
+	// and unique across all of them. Wired to the F12 menu's "Probe Seat
+	// Hands" item.
+	void ProbeSeatHands();
+
 	// Diagnostic: reads Scene.f_6 (kSceneDominoSkinFieldOffset in
 	// DominoCheat.cpp -- see its own header comment for the full
 	// derivation trail), the current table's "dominos_set_N" skin

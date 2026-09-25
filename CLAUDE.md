@@ -457,6 +457,21 @@ bin\Debug\DominoHandEvalTests.exe
 Exits 0 and prints `ALL PASS` if every case passes; nonzero with a
 `[FAIL]` line per failing case otherwise.
 
+**Recorded games as tests.** The Debug build appends a JSONL game log,
+`DominoCheat_games.jsonl`, next to `DominoCheat.log` (rolls over at 4 MB
+to `.1.jsonl`). Each line is a `decision` (my move while advice was shown:
+the search's full input, the advice, what I played, whether it went on
+the recommended end), an `npcMove` (an opponent play the scripted-AI
+model predicted: hand, open ends, the native candidate list in order,
+predicted vs played) or a `round` (final hands, scores before/after,
+target, buy-in, per-round tallies). To pin a real position as a
+regression test, copy its line into `tests/fixtures/games.jsonl` and add
+`"expectTile":[low,high]` (plus optional `"expectEnd"` on a decision);
+`TestRecordedGames` replays decisions through `FindBestMove()` and NPC
+moves through `DominoAiPolicy::SelectCandidate()`. Format:
+`src/GameRecord.h`. Quick summaries: `jq -s` over the file, e.g. NPC
+match rate per rule set from `npcMove` lines.
+
 ## Source layout
 
 - `src/main.cpp` -- `DllMain`, registers `ScriptMain`. Vendored from
@@ -493,6 +508,11 @@ Exits 0 and prints `ALL PASS` if every case passes; nonzero with a
   `tests/DominoHandEvalTests.cpp` (a real background thread, polled with
   a timeout) since the real in-game call pattern can't be exercised
   outside the game.
+- `src/GameRecord.h` -- the game log's JSONL line writer/flat reader
+  plus `GameState`/candidate-list (de)serialization, ported from
+  BlackjackCheat's `RoundRecord.h`. Zero game dependency; shared by the
+  mod's Debug-only `GameRecorder` (`DominoCheat.cpp`) and the fixture
+  replay test.
 - `src/ScriptLocal.h` -- a small chainable script-local field/array
   accessor, ported from HorseMenu's own `game/rdr/ScriptLocal.hpp`/
   `ScriptGlobal.hpp` (`..\HorseMenu\src\game\rdr\`) at the user's own
@@ -781,8 +801,10 @@ CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
 2. **Watch a hand grow past 7 tiles** (draw from the boneyard because no
    hand tile was playable) and confirm `ProbeSeatHands()`'s widened
    (up to 19) tile dump shows the real extra tile(s) rather than garbage.
-3. **Trace kSeatActiveFlagOffset's real meaning** (reads 100 when
-   occupied, 0 when empty) -- low priority, not blocking anything.
+3. DONE (2026-09-25, static trace): seat.f_1 is the seat's buy-in in
+   cents (`kSeatBuyInOffset`, formerly `kSeatActiveFlagOffset`), set
+   from `Round.f_666.f_6`; `SeatsHolder.f_5` is the pot. Logged by the
+   new `Probe Rules & Scores` item and at every new deal.
 4. DONE (Session 11): boneyard draws are modeled and the 1-ply
    fallback is gone. LIVE-CONFIRMED 2026-09-17 (item 11 above, 1v1 Draw
    rules, heavy boneyard use): the search runs every decision without
@@ -809,9 +831,9 @@ CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
    `"dominos_set_N"`/`"DOMINO_<low>_<high>"` asset pair actually renders
    correct tile faces and that `ComputeDenseRowForSeat()`'s rotation
    direction put opponents in sensible spots for at least the seat
-   tested. Still open: (a) `OpponentHandBaseX/Y/StepY` and `BoneyardX/Y`/
-   `MoveAdviceX/Y` haven't been touched yet -- still PokerCheat's own
-   pre-calibration numbers, not this mod's. (b) `ComputeDenseRowForSeat()`'s
+   tested. (a) DONE (2026-09-25): `OpponentHandBaseX/Y/StepY`,
+   `BoneyardX/Y` and `MoveAdviceX/Y` -- user confirmed the HUD layout
+   looks right in game at the current defaults. Still open: (b) `ComputeDenseRowForSeat()`'s
    direction has only been checked from ONE seat -- worth a second data
    point from a different raw seat to confirm it truly rotates relative
    to you (PokerCheat's own confirmation) rather than coincidentally
@@ -825,6 +847,60 @@ CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
    trusting Scene's. Both world-space markers are now CONFIRMED LIVE
    correct -- see `DominoCheat.cpp`'s header comment's "Session 12"
    entries for the full story.
+
+**Live-test checks (2026-09-25, Debug only):** F12 now also has `Probe
+Rules & Scores` and `Probe Seat Hands`, and the per-tick Debug trace logs
+`CHECK` lines on its own: rules/target/scores/buy-in and opponent HUD
+rows at every new deal, turn order against `DominoSearch`'s `NextSeat()`,
+every mid-round draw against the boneyard's draw order (plus a full
+validity check once a hand passes 7 tiles), and frame time during your
+decision window vs. the rest of the game. `grep CHECK DominoCheat.log`
+after a session.
+
+**Advised end (2026-09-25, NOT yet live-tested):** the "PLAY HERE" marker
+used the first native spot for the tile, ignoring which end the advice
+chose. `PickAdvisedCandidate()` now keeps only spots on the advised end
+(`CandidateEndPip()`: a synthetic `[e|x]`, x not open, lands on exactly
+end e's grid spots) and takes the highest resulting total among them. The
+All Fives/Threes root bonus is now per end too
+(`GameState::rootMoveBonusPoints[hand][RootBonusSlot(end)]`). Also fixed:
+an empty board read as all 7 numbers open, so the opening move was
+searched on a 7-ended board.
+
+**Exact board (2026-09-25, CONFIRMED LIVE):** `BoardTracker`
+(`DominoCheat.cpp`, all builds) rebuilds a `DominoSearch::Board` (each
+end's pip, doubles, the spinner) from the game's own placement log,
+CONFIRMED against a live stack dump: `SeatsHolder.f_6` word 0 = end total
+(recounted after every placement), `f_6.f_1[i]` = SCR_ARRAY[28] of
+5-word records `{low, high, gridX, gridY, orientation}` in play order,
+`f_6.f_142` = placed count (records past it are last round's).
+`DominoSearch::BoardReplay` attaches each tile to the nearest fitting end
+on the grid; the replayed total must equal word 0 every tick or the
+exact board is dropped for the round. Works mid-round. Rules (first
+double = spinner, even mid-round -- confirmed; double end = 2x; unplayed
+spinner side = 0; native f_4 quirk on spinner sides) are pinned by
+`TestBoardRulesReplay`/`TestBoardReplayFromPlacementLog`. With the exact
+board the search scores every placement and restricts All Fives/Threes
+opponents to the scripted AI's choice; without it the old model applies.
+`DetermineOpenEnds()`'s synthetic-double probe was seen live to MISS an
+end (a double won't fit next to a `[5|5]` end the game still accepts
+`[2|5]` on), which is why the tracker's open numbers now replace it.
+Live result (3 full 3-seat All Fives matches, won): every placement's
+replayed total matched the game's, 47/47 decisions had the exact board,
+85/85 NPC moves predicted, and the only model mismatch (the native f_4
+quirk also covers the first long side of a double opener) is fixed.
+
+**Session summary (2026-09-25).** CONFIRMED LIVE: rules hash, points
+target, buy-in/pot (`seat.f_1` = buy-in cents, `SeatsHolder.f_5` = pot),
+seat scores (they update mid-round on All Fives), turn order 0 -> 2 -> 1
+(3-seat), boneyard draw order, hands past 7 tiles, frame time (no hitches
+at `WallClockBudget=1000`), the scripted All Fives AI (105/105 moves),
+the advised-end marker, and the exact board. The player's raw seat
+varies by chair (seat 1 and seat 2 seen). Still untested: a 4-seat table,
+All Threes, Block/Draw with the exact board, and whether the opponent
+tile rows sit next to the right NPC from a non-zero seat (visual only).
+Debug writes `DominoCheat_games.jsonl` (see Tests) -- summarize it with a
+short script after a session rather than asking the player.
 
 Expect more corrections on anything still marked untraced -- four fixes
 so far (`kSeatStride`, the boneyard header word, the ped-array header

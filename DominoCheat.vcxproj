@@ -36,6 +36,7 @@
     <ClInclude Include="external\ScriptHookSDK\inc\natives.h" />
     <ClInclude Include="external\ScriptHookSDK\inc\types.h" />
     <ClInclude Include="src\DominoAiPolicy.h" />
+    <ClInclude Include="src\GameRecord.h" />
     <ClInclude Include="src\keyboard.h" />
     <ClInclude Include="src\script.h" />
     <ClInclude Include="src\scriptmenu.h" />

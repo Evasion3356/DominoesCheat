@@ -68,8 +68,8 @@
 	multiple of five/three (func_354). The search can't compute those
 	totals from its board abstraction (below), but at the ROOT the native
 	legal-move query reports each of mySeat's candidates' exact resulting
-	total, so DetermineBestMove() fills rootMoveBonusPoints and the
-	search credits it to that root move's gain. Deeper scoring plays,
+	total, so DetermineBestMove() fills rootMoveBonusPoints (per hand
+	tile AND per end) and the search credits it to that root move's gain. Deeper scoring plays,
 	ours or theirs, remain unmodeled.
 
 	PERFORMANCE: fixed-capacity arrays everywhere (no heap allocation in
@@ -82,18 +82,43 @@
 	round and are exact later. An iteration whose explored tree never hit
 	the depth horizon is exact, and the search stops there.
 
+	EXACT BOARD (2026-09-25): when DominoCheat.cpp's BoardTracker has
+	followed the round from its deal, GameState::board holds every open
+	end exactly -- its pip, whether a double sits there, and the spinner
+	-- and exactBoard is set. Rules, confirmed against every placement of
+	a recorded 3-seat All Fives round (native end totals and score
+	changes, see tests/DominoHandEvalTests.cpp TestBoardRulesReplay):
+	  - the FIRST double played is the spinner. Its two long sides are
+	    ends; while either is still open the spinner is worth 2x its pip
+	    in the end total (once, not per side). When both long sides are
+	    covered, its two perpendicular sides open; an unplayed side is
+	    playable but worth 0.
+	  - any other double at an end is worth 2x its pip; a plain end its
+	    pip. The end total is the sum.
+	  - after each placement the game recounts the total and credits
+	    the mover if it is a nonzero multiple of 5 (All Fives) / 3 (All
+	    Threes) -- func_354 via MINIGAME::_0x3F4FD4BED07AB8C4.
+	  - the scripted AI chooses from the NATIVE candidate list, whose end
+	    total (f_4) values any spinner end at 2x the spinner pip when
+	    subtracting the covered end: onto an UNPLAYED spinner side, or
+	    onto the first long side of a spinner whose long sides are both
+	    open, it reports the true total minus 2x the spinner pip. The AI
+	    therefore sometimes misjudges those plays; NativeEndTotal()
+	    reproduces that exactly.
+	With the exact board, every placement's score is credited during the
+	search (mine and theirs), and scoring-table opponents are restricted
+	to the scripted AI's choice (highest native scoring total, else
+	highest pips; ties searched adversarially) instead of paranoid play.
+	Without it (joined mid-round, tracker lost track), the old model
+	below applies unchanged.
+
 	What this file does NOT model:
-	 - The real board only exposes a SET of open pip values (0-6) via
-	   DetermineOpenEnds() -- not how many independent ends show each
-	   value, nor the spinner/spur layout the IDA trace found (see
-	   DominoCheat.cpp's file header comment, Session 4). OpenEnds models
-	   the board as one abstract "slot" per distinct open pip and playing
-	   a tile REPLACES that slot's value. A real board with two ends
-	   sharing a pip collapses to one slot here, which can occasionally
-	   misjudge which exact end closes.
-	 - All Fives/All Threes mid-round scoring beyond the root move, and
-	   the scoring-mode AI's preference for a scoring placement (it
-	   needs the exact board-end total). Opponents on those tables are
+	 - Without the exact board: the real board only exposes a SET of open
+	   pip values (0-6) via DetermineOpenEnds(). OpenEnds models the board
+	   as one abstract "slot" per distinct open pip and playing a tile
+	   REPLACES that slot's value. A real board with two ends sharing a
+	   pip collapses to one slot here. All Fives/All Threes scoring beyond
+	   the root move is then unmodeled and scoring-table opponents are
 	   searched paranoidly over every legal reply.
 	 - Opponents blocking EACH OTHER for their own benefit: every reply
 	   the policy leaves open is minimized from mySeat's perspective.
@@ -124,10 +149,11 @@ namespace DominoSearch
 	constexpr std::size_t kMaxHandTiles = 19;
 	constexpr int kBoneyardCapacity = DominoHandEval::kTileSetSize;
 
-	// A tile matching two different open ends yields two moves; a
-	// maximally degenerate board (all 7 pips open) against a max-size
-	// hand could in theory approach kMaxHandTiles*2 -- sized generously.
-	constexpr std::size_t kMaxMovesPerNode = 48;
+	// A tile matching two different open ends yields two moves; on the
+	// exact board a tile can also reach up to 6 distinct targets (4
+	// regular ends + a spinner long side + an unplayed spinner side).
+	// Real positions stay far below this; MoveList::Push drops extras.
+	constexpr std::size_t kMaxMovesPerNode = 64;
 
 	// One abstract open "slot" per distinct playable pip value -- see the
 	// file header comment for why a SET is the right fidelity level.
@@ -146,6 +172,239 @@ namespace DominoSearch
 					return;
 				}
 			}
+		}
+	};
+
+	// rootMoveBonusPoints' second index: the end's pip 0-6, or slot 7 for
+	// the opening move (endPip -1, empty board).
+	constexpr int kRootBonusSlots = 8;
+
+	inline int RootBonusSlot(std::int32_t endPip)
+	{
+		return (endPip >= 0 && endPip <= 6) ? endPip : 7;
+	}
+
+	// ---- Exact board -- see the file header's EXACT BOARD section ----
+
+	struct BoardEnd
+	{
+		std::int8_t pip = -1;
+		bool dbl = false; // a double sits at this end: worth 2x its pip
+
+		bool operator==(const BoardEnd& o) const { return pip == o.pip && dbl == o.dbl; }
+	};
+
+	// Where a move goes on the exact board: a regular end's index, a
+	// spinner long side, or an unplayed spinner side. kTargetOpening is
+	// the first tile of the round (and every move on the old model).
+	constexpr std::int8_t kTargetOpening = -1;
+	constexpr std::int8_t kTargetSpinnerLong = 4;
+	constexpr std::int8_t kTargetEmptySide = 5;
+
+	// "No native end total" -- a real one can be negative (the spinner
+	// side quirk), so -1 can't mean "unknown".
+	constexpr std::int32_t kNoNativeTotal = std::numeric_limits<std::int32_t>::min();
+
+	struct Board
+	{
+		std::array<BoardEnd, 4> ends{}; // regular exposed ends (never the spinner's own sides)
+		int count = 0;
+		std::int8_t spinnerPip = -1;   // -1: no double played yet
+		std::int8_t spinnerLong = 0;   // spinner long sides still open (0-2)
+		std::int8_t emptySides = 0;    // spinner sides open but unplayed (0-2)
+		bool placed = false;           // at least one tile on the table
+
+		// Same position regardless of end order.
+		bool operator==(const Board& o) const
+		{
+			if (count != o.count || spinnerPip != o.spinnerPip || spinnerLong != o.spinnerLong ||
+				emptySides != o.emptySides || placed != o.placed)
+				return false;
+			std::array<bool, 4> used{};
+			for (int i = 0; i < count; i++)
+			{
+				bool found = false;
+				for (int k = 0; k < o.count && !found; k++)
+					if (!used[k] && o.ends[k] == ends[i])
+						used[k] = found = true;
+				if (!found)
+					return false;
+			}
+			return true;
+		}
+	};
+
+	// The end total the game recounts after a placement.
+	inline int BoardTotal(const Board& board)
+	{
+		int total = board.spinnerLong > 0 ? 2 * board.spinnerPip : 0;
+		for (int i = 0; i < board.count; i++)
+			total += board.ends[i].dbl ? 2 * board.ends[i].pip : board.ends[i].pip;
+		return total;
+	}
+
+	// The pip a target needs, or -1 if the target doesn't exist.
+	inline int TargetPip(const Board& board, std::int8_t target)
+	{
+		if (target >= 0 && target < board.count)
+			return board.ends[target].pip;
+		if (target == kTargetSpinnerLong && board.spinnerLong > 0)
+			return board.spinnerPip;
+		if (target == kTargetEmptySide && board.emptySides > 0)
+			return board.spinnerPip;
+		return -1;
+	}
+
+	// `tile` placed on `target` (kTargetOpening on an empty board),
+	// attaching its `endPip` half. The caller checks legality.
+	inline Board PlaceOnBoard(const Board& board, const Tile& tile, std::int8_t target, int endPip)
+	{
+		Board next = board;
+		next.placed = true;
+		const bool dbl = tile.low == tile.high;
+		if (target == kTargetOpening)
+		{
+			next = Board{};
+			next.placed = true;
+			if (dbl)
+			{
+				next.spinnerPip = static_cast<std::int8_t>(tile.low);
+				next.spinnerLong = 2;
+			}
+			else
+			{
+				next.ends[0] = { static_cast<std::int8_t>(tile.low), false };
+				next.ends[1] = { static_cast<std::int8_t>(tile.high), false };
+				next.count = 2;
+			}
+			return next;
+		}
+
+		if (target >= 0 && target < next.count)
+		{
+			for (int i = target; i + 1 < next.count; i++)
+				next.ends[i] = next.ends[i + 1];
+			next.count--;
+		}
+		else if (target == kTargetSpinnerLong)
+		{
+			if (--next.spinnerLong == 0)
+				next.emptySides = 2;
+		}
+		else if (target == kTargetEmptySide)
+			next.emptySides--;
+
+		const int newPip = (tile.low == endPip) ? tile.high : tile.low;
+		if (dbl && next.spinnerPip < 0)
+		{
+			// The first double becomes the spinner, one long side
+			// attached, its outer long side open.
+			next.spinnerPip = static_cast<std::int8_t>(newPip);
+			next.spinnerLong = 1;
+		}
+		else if (next.count < static_cast<int>(next.ends.size()))
+			next.ends[next.count++] = { static_cast<std::int8_t>(newPip), dbl };
+		return next;
+	}
+
+	// The end total the NATIVE candidate list (f_4) reports for a
+	// placement -- what the scripted AI chooses by. The native computes
+	// it as (current total - covered end's value + new end's value), and
+	// values ANY spinner end (long side or unplayed side) at 2x the
+	// spinner pip. That is the real total except when covering an
+	// unplayed side (really worth 0) or the FIRST long side of a spinner
+	// with both long sides open (the spinner still counts afterwards).
+	// Confirmed live 2026-09-25: [3|5] onto an opening [5|5] showed 3,
+	// the recount was 13.
+	inline int NativeEndTotal(const Board& before, const Board& after, std::int8_t target)
+	{
+		int total = BoardTotal(after);
+		if (target == kTargetEmptySide || (target == kTargetSpinnerLong && after.spinnerLong > 0))
+			total -= 2 * before.spinnerPip;
+		return total;
+	}
+
+	// One entry of the game's own placement log (SeatsHolder.f_6.f_1[i],
+	// see DominoCheat.cpp's BoardTracker): the tile and the board grid
+	// cell it was placed at.
+	struct PlacedRecord
+	{
+		Tile tile;
+		int gx = 0;
+		int gy = 0;
+	};
+
+	// Rebuilds the exact board from the placement log, in order. Each
+	// tile attaches to the open end, among those its numbers fit, whose
+	// exposing tile sits nearest to it on the grid (a new tile is laid
+	// right next to the tile it extends; the spinner's long sides and
+	// unplayed sides are never open at the same time, so "nearest"
+	// never has to tell those apart). A tie between two ends that would
+	// give different boards fails the replay rather than guessing.
+	struct BoardReplay
+	{
+		Board board;
+		std::array<std::array<int, 2>, 4> endGrid{}; // parallel to board.ends
+		std::array<int, 2> spinnerGrid{};
+		int applied = 0;
+		bool ok = true;
+
+		bool Apply(const PlacedRecord& record)
+		{
+			if (!ok)
+				return false;
+			const Tile& tile = record.tile;
+			if (!tile.IsValid())
+				return ok = false;
+			const std::array<int, 2> at{ record.gx, record.gy };
+			auto dist = [&](const std::array<int, 2>& g) { return (g[0] - at[0]) * (g[0] - at[0]) + (g[1] - at[1]) * (g[1] - at[1]); };
+
+			if (!board.placed)
+			{
+				board = PlaceOnBoard(board, tile, kTargetOpening, tile.low);
+				endGrid.fill(at);
+				spinnerGrid = at;
+				applied++;
+				return true;
+			}
+
+			std::int8_t bestTarget = -2;
+			int bestPip = -1;
+			int bestDist = std::numeric_limits<int>::max();
+			bool tie = false;
+			auto consider = [&](std::int8_t target, int pip, const std::array<int, 2>& grid)
+			{
+				if (pip < 0 || (tile.low != pip && tile.high != pip))
+					return;
+				int d = dist(grid);
+				if (d < bestDist)
+				{
+					bestDist = d;
+					bestTarget = target;
+					bestPip = pip;
+					tie = false;
+				}
+				else if (d == bestDist && !(PlaceOnBoard(board, tile, target, pip) == PlaceOnBoard(board, tile, bestTarget, bestPip)))
+					tie = true;
+			};
+			for (int e = 0; e < board.count; e++)
+				consider(static_cast<std::int8_t>(e), board.ends[static_cast<std::size_t>(e)].pip, endGrid[static_cast<std::size_t>(e)]);
+			consider(kTargetSpinnerLong, TargetPip(board, kTargetSpinnerLong), spinnerGrid);
+			consider(kTargetEmptySide, TargetPip(board, kTargetEmptySide), spinnerGrid);
+			if (bestTarget == -2 || tie)
+				return ok = false;
+
+			Board after = PlaceOnBoard(board, tile, bestTarget, bestPip);
+			if (bestTarget >= 0)
+				for (int i = bestTarget; i + 1 < board.count; i++)
+					endGrid[static_cast<std::size_t>(i)] = endGrid[static_cast<std::size_t>(i) + 1];
+			if (board.spinnerPip < 0 && after.spinnerPip >= 0)
+				spinnerGrid = at; // this tile became the spinner
+			else if (after.count > 0)
+				endGrid[static_cast<std::size_t>(after.count - 1)] = at;
+			board = after;
+			applied++;
+			return true;
 		}
 	};
 
@@ -176,9 +435,18 @@ namespace DominoSearch
 		std::array<std::int32_t, kMaxSeats> roundGain{};
 
 		// Root-only: points the game credits mySeat immediately for
-		// playing hand tile [i] from THIS position (All Fives/All Threes
-		// end-total scoring, read exactly from the native at the root).
-		std::array<std::int32_t, kMaxHandTiles> rootMoveBonusPoints{};
+		// playing hand tile [i] on end [RootBonusSlot(endPip)] from THIS
+		// position (All Fives/All Threes end-total scoring, read exactly
+		// from the native at the root). Per end, because a tile that fits
+		// two numbers can score on one end and not the other.
+		std::array<std::array<std::int32_t, kRootBonusSlots>, kMaxHandTiles> rootMoveBonusPoints{};
+
+		// Exact board (see the file header). When exactBoard is set the
+		// search plays on `board` and `ends` is only the matching SET of
+		// open pips (for display/records); rootMoveBonusPoints is unused,
+		// since every placement's score is computed from the board.
+		Board board;
+		bool exactBoard = false;
 
 		bool operator==(const GameState& other) const
 		{
@@ -186,7 +454,8 @@ namespace DominoSearch
 				turnSeat != other.turnSeat || passStreak != other.passStreak || ends.count != other.ends.count ||
 				boneyardCount != other.boneyardCount || boneyardNext != other.boneyardNext ||
 				scores != other.scores || pointsTarget != other.pointsTarget || roundGain != other.roundGain ||
-				rootMoveBonusPoints != other.rootMoveBonusPoints)
+				rootMoveBonusPoints != other.rootMoveBonusPoints || exactBoard != other.exactBoard ||
+				(exactBoard && !(board == other.board)))
 				return false;
 			for (int e = 0; e < ends.count; e++)
 				if (ends.pips[e] != other.ends.pips[e])
@@ -208,6 +477,7 @@ namespace DominoSearch
 		Tile tile;
 		std::int32_t endPip = -1;    // -1: opening move on an empty board
 		std::int32_t resultPip = -1; // -1: opening move (both pips open afterwards)
+		std::int8_t target = kTargetOpening; // exact board only: which end (see Board)
 	};
 
 	// Fixed-capacity move list -- see kMaxMovesPerNode above.
@@ -259,6 +529,8 @@ namespace DominoSearch
 		bool exact = false;          // the completed iteration never hit the horizon: outcome/points are the round's real result under the model
 		Outcome outcome = Outcome::Undecided;
 		std::int32_t points = 0;     // net points (my gain - the round winner's gain) at the end of the recommended line; a horizon estimate when !exact
+		std::int8_t target = kTargetOpening; // exact board only: which end
+		std::int32_t nativeTotal = kNoNativeTotal; // exact board only: the native candidate end total (f_4) of the recommended placement
 	};
 
 	struct SearchControl
@@ -430,8 +702,55 @@ namespace DominoSearch
 			return true;
 		}
 
+		inline MoveList LegalMovesExact(const GameState& state, int seat)
+		{
+			MoveList moves;
+			const Board& board = state.board;
+			for (int i = 0; i < state.handCounts[seat]; i++)
+			{
+				const Tile& tile = state.hands[seat][i];
+				if (!tile.IsValid())
+					continue;
+
+				auto push = [&](std::int8_t target, int endPip)
+				{
+					Move mv;
+					mv.handIndex = static_cast<std::size_t>(i);
+					mv.tile = tile;
+					mv.target = target;
+					mv.endPip = endPip;
+					mv.resultPip = target == kTargetOpening ? -1 : ((tile.low == endPip) ? tile.high : tile.low);
+					moves.Push(mv);
+				};
+
+				if (!board.placed)
+				{
+					push(kTargetOpening, -1);
+					continue;
+				}
+				for (int e = 0; e < board.count; e++)
+				{
+					bool duplicate = false; // identical ends lead to identical positions
+					for (int previous = 0; previous < e; previous++)
+						if (board.ends[previous] == board.ends[e])
+							duplicate = true;
+					int pip = board.ends[e].pip;
+					if (!duplicate && (tile.low == pip || tile.high == pip))
+						push(static_cast<std::int8_t>(e), pip);
+				}
+				if (board.spinnerLong > 0 && (tile.low == board.spinnerPip || tile.high == board.spinnerPip))
+					push(kTargetSpinnerLong, board.spinnerPip);
+				if (board.emptySides > 0 && (tile.low == board.spinnerPip || tile.high == board.spinnerPip))
+					push(kTargetEmptySide, board.spinnerPip);
+			}
+			return moves;
+		}
+
 		inline MoveList LegalMoves(const GameState& state, int seat)
 		{
+			if (state.exactBoard)
+				return LegalMovesExact(state, seat);
+
 			MoveList moves;
 			int handCount = state.handCounts[seat];
 			for (int i = 0; i < handCount; i++)
@@ -480,11 +799,37 @@ namespace DominoSearch
 		// the scoring preference needs the native's exact end totals.
 		// Also every legal reply if the candidate list would overflow the
 		// native's 15-entry buffer, where the script's own view is cut.
+		//
+		// With the exact board, scoring tables are restricted too: the
+		// AI takes its highest native scoring total (func_352), else its
+		// highest-pip tile (func_353); ties are kept.
 		inline MoveList OpponentMoves(const GameState& state, int seat)
 		{
 			MoveList legal = LegalMoves(state, seat);
-			if (!DominoAiPolicy::AlwaysUsesPipPriority(state.rules) || legal.count > 15)
+			if (legal.count > 15 || state.rules == DominoAiPolicy::Rules::Unknown)
 				return legal;
+			if (!DominoAiPolicy::AlwaysUsesPipPriority(state.rules))
+			{
+				if (!state.exactBoard)
+					return legal;
+				std::array<int, kMaxMovesPerNode> points{};
+				int bestPoints = 0;
+				for (int i = 0; i < legal.count; i++)
+				{
+					const Move& mv = legal.moves[static_cast<std::size_t>(i)];
+					Board after = PlaceOnBoard(state.board, mv.tile, mv.target, mv.endPip);
+					points[static_cast<std::size_t>(i)] = DominoAiPolicy::ScoringPoints(state.rules, NativeEndTotal(state.board, after, mv.target));
+					bestPoints = std::max(bestPoints, points[static_cast<std::size_t>(i)]);
+				}
+				if (bestPoints > 0)
+				{
+					MoveList scoring;
+					for (int i = 0; i < legal.count; i++)
+						if (points[static_cast<std::size_t>(i)] == bestPoints)
+							scoring.Push(legal.moves[static_cast<std::size_t>(i)]);
+					return scoring;
+				}
+			}
 			int highestPips = -1;
 			for (const Move& move : legal)
 				highestPips = std::max(highestPips, move.tile.PipTotal());
@@ -509,7 +854,18 @@ namespace DominoSearch
 			for (int i = removeAt; i + 1 < count; i++)
 				hand[i] = hand[i + 1];
 			count--;
-			if (move.endPip < 0)
+			if (state.exactBoard)
+			{
+				next.board = PlaceOnBoard(state.board, move.tile, move.target, move.endPip);
+				int divisor = state.rules == DominoAiPolicy::Rules::AllFives ? 5 : (state.rules == DominoAiPolicy::Rules::AllThrees ? 3 : 0);
+				if (divisor > 0)
+				{
+					int total = BoardTotal(next.board);
+					if (total > 0 && total % divisor == 0)
+						next.roundGain[seat] += total;
+				}
+			}
+			else if (move.endPip < 0)
 			{
 				next.ends.count = 0;
 				next.ends.pips[static_cast<std::size_t>(next.ends.count++)] = move.tile.low;
@@ -711,8 +1067,8 @@ namespace DominoSearch
 				int moveIndex = order[static_cast<std::size_t>(k)];
 				const Move& mv = moves.moves[static_cast<std::size_t>(moveIndex)];
 				GameState next = detail::ApplyMove(state, mySeat, mv);
-				if (mv.handIndex < kMaxHandTiles && state.rootMoveBonusPoints[mv.handIndex] > 0)
-					next.roundGain[mySeat] += state.rootMoveBonusPoints[mv.handIndex];
+				if (!state.exactBoard && mv.handIndex < kMaxHandTiles && state.rootMoveBonusPoints[mv.handIndex][RootBonusSlot(mv.endPip)] > 0)
+					next.roundGain[mySeat] += state.rootMoveBonusPoints[mv.handIndex][RootBonusSlot(mv.endPip)];
 
 				std::int32_t score = 0;
 				stats.horizonCut = false;
@@ -741,6 +1097,8 @@ namespace DominoSearch
 					candidate.tile = mv.tile;
 					candidate.endPip = mv.endPip;
 					candidate.resultPip = mv.resultPip;
+					candidate.target = mv.target;
+					candidate.nativeTotal = state.exactBoard ? NativeEndTotal(state.board, next.board, mv.target) : kNoNativeTotal;
 					candidate.isWinningMove = (next.handCounts[mySeat] == 0);
 					candidate.score = score;
 					candidate.completedDepth = iteration;

@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Changed
+
+- All Fives and All Threes advice is much stronger. The mod now follows
+  the exact board (every end, which ends are doubles, and the spinner), so
+  the advisor counts every scoring play for the rest of the round, yours
+  and the opponents', and expects each opponent to make the move the
+  game's AI actually makes instead of the worst possible one.
+- The "PLAY HERE" marker now points at the end the advice chose. When a
+  tile fit two ends it could point at the other one, and on All Fives it
+  now picks the spot that scores.
+
+### Fixed
+
+- No advice on some turns: the check for which numbers are open could
+  miss an end next to a double.
+- The first move of a round was evaluated as if every number were open.
+- On All Fives/All Threes, a tile that fits two ends could be credited
+  with the points only the other end scores.
+
 ### Added
 
 - `[Advisor] WallClockBudget=0` now means unlimited: the move advisor keeps

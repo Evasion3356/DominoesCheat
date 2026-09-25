@@ -13,6 +13,8 @@
     <ClInclude Include="..\src\DominoHandEval.h" />
     <ClInclude Include="..\src\DominoSearch.h" />
     <ClInclude Include="..\src\AsyncMoveAdvisor.h" />
+    <ClInclude Include="..\src\GameRecord.h" />
+    <None Include="fixtures\games.jsonl" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{3E7F5D2A-6C41-4B8E-9A2D-8F1C4E6B7A03}</ProjectGuid>

@@ -18,12 +18,16 @@
 #include "../src/DominoSearch.h"
 #include "../src/AsyncMoveAdvisor.h"
 #include "../src/Config.h"
+#include "../src/GameRecord.h"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <new>
 #include <random>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -391,16 +395,220 @@ namespace
 		// if playing [4|6] itself scores me 5 and I sit at 55/60, the game
 		// ends in my favour before A ever moves.
 		state.scores = { 55, 55, 0 };
-		state.rootMoveBonusPoints[0] = 5;
+		state.rootMoveBonusPoints[0].fill(5);
 		auto bonus = DominoSearch::FindBestMove(state, 0, 20);
 		Check(bonus.valid && bonus.exact && bonus.tile.high == 6 && bonus.outcome == DominoSearch::Outcome::GameWin && bonus.points == 5,
 			"a root scoring bonus that reaches the target is an immediate game win", "expected [4|6] as GAME WIN +5");
 		state.scores = { 0, 0, 0 };
 		state.pointsTarget = 0;
-		state.rootMoveBonusPoints[0] = 5;
+		state.rootMoveBonusPoints[0].fill(5);
 		bonus = DominoSearch::FindBestMove(state, 0, 20);
 		Check(bonus.valid && bonus.tile.high == 6 && bonus.points == -2,
 			"a root scoring bonus nets against the round result", "expected +5 bonus - 7 conceded = -2");
+	}
+
+	// Exact board rules, replayed against a real recorded 3-seat All Fives
+	// round (2026-09-25, DominoCheat_games.jsonl 14:37-14:39): every
+	// placement's end total must equal what the game recounted (the score
+	// changes and the native candidate totals of that round), and a play
+	// onto an unplayed spinner side must reproduce the native's quirk.
+	// Targets are named by what they cover: a regular end (pip, double?),
+	// the spinner's long side, or an unplayed spinner side.
+	std::int8_t FindTarget(const DominoSearch::Board& board, char kind, int pip, bool dbl)
+	{
+		if (kind == 'L')
+			return DominoSearch::kTargetSpinnerLong;
+		if (kind == 'S')
+			return DominoSearch::kTargetEmptySide;
+		if (kind == 'O')
+			return DominoSearch::kTargetOpening;
+		for (int e = 0; e < board.count; e++)
+			if (board.ends[e].pip == pip && board.ends[e].dbl == dbl)
+				return static_cast<std::int8_t>(e);
+		return -2;
+	}
+
+	void TestBoardRulesReplay()
+	{
+		struct Play { Tile tile; char kind; int endPip; bool endDbl; int total; int native; };
+		// kind: O opening, E regular end (endPip/endDbl), L spinner long side, S unplayed spinner side.
+		const Play plays[] = {
+			{ {5,5}, 'O', -1, false, 10, 10 }, // seat 0 opens: spinner 5
+			{ {0,5}, 'L',  5, false, 10,  0 }, // me: scored 10; first long side of a double opener: native 10 - 10
+			{ {0,0}, 'E',  0, false, 10, 10 }, // seat 1: scored 10
+			{ {3,5}, 'L',  5, false,  3,  3 }, // spinner long sides both covered: sides open
+			{ {0,2}, 'E',  0, true,   5,  5 }, // me: scored 5
+			{ {4,5}, 'S',  5, false,  9, -1 }, // side play: native reports 9 - 10
+			{ {3,3}, 'E',  3, false, 12, 12 },
+			{ {3,6}, 'E',  3, true,  12, 12 },
+			{ {4,6}, 'E',  6, false, 10, 10 }, // seat 1: scored 10
+			{ {2,2}, 'E',  2, false, 12, 12 },
+			{ {4,4}, 'E',  4, false, 16, 16 },
+			{ {2,3}, 'E',  2, true,  15, 15 }, // seat 1: scored 15
+			{ {1,3}, 'E',  3, false, 13, 13 },
+			{ {1,4}, 'E',  4, false, 10, 10 }, // me: scored 10 (on the [4|4] end it would be 6)
+			{ {1,6}, 'E',  1, false, 15, 15 }, // seat 1: scored 15
+			{ {6,6}, 'E',  6, false, 21, 21 },
+			{ {0,1}, 'E',  1, false, 20, 20 }, // me: scored 20
+			{ {1,5}, 'S',  5, false, 21, 11 }, // side play: native 21 - 10
+			{ {0,6}, 'E',  0, false, 27, 27 },
+		};
+
+		DominoSearch::Board board;
+		bool ok = true;
+		std::string detail;
+		for (std::size_t i = 0; i < sizeof(plays) / sizeof(plays[0]) && ok; i++)
+		{
+			const Play& play = plays[i];
+			std::int8_t target = FindTarget(board, play.kind, play.endPip, play.endDbl);
+			int pip = DominoSearch::TargetPip(board, target);
+			if (target == -2 || (play.kind != 'O' && pip != play.endPip))
+			{
+				ok = false;
+				detail = "play " + std::to_string(i) + ": target not on the board";
+				break;
+			}
+			DominoSearch::Board after = DominoSearch::PlaceOnBoard(board, play.tile, target, play.endPip);
+			int total = DominoSearch::BoardTotal(after);
+			int native = DominoSearch::NativeEndTotal(board, after, target);
+			if (total != play.total || native != play.native)
+			{
+				ok = false;
+				detail = "play " + std::to_string(i) + ": total " + std::to_string(total) + " native " + std::to_string(native) +
+					", game had " + std::to_string(play.total) + " / " + std::to_string(play.native);
+			}
+			board = after;
+		}
+		Check(ok, "exact board reproduces every end total of a recorded All Fives round", detail.c_str());
+
+		// The same data's other candidates: from the board after play 13
+		// ([1|3]), [1|4] on the double-4 end would total 6 (native list
+		// showed 6 and 10 for the two 4-spots).
+		DominoSearch::Board b;
+		for (std::size_t i = 0; i < 13; i++)
+			b = DominoSearch::PlaceOnBoard(b, plays[i].tile, FindTarget(b, plays[i].kind, plays[i].endPip, plays[i].endDbl), plays[i].endPip);
+		DominoSearch::Board onDouble = DominoSearch::PlaceOnBoard(b, Tile{1,4}, FindTarget(b, 'E', 4, true), 4);
+		Check(DominoSearch::BoardTotal(onDouble) == 6, "a double at an end counts twice until covered", "expected [1|4] on the [4|4] end to total 6");
+	}
+
+	// BoardTracker's source: the game's own placement log, read from a
+	// live stack dump (2026-09-25 14:56, 3-seat All Fives, 11 tiles down;
+	// SeatsHolder.f_6 records [low, high, grid x, grid y]). The replay must
+	// land on the game's own recounted total (word 0 = 11) and open ends
+	// {0, 1, 5, 6} -- including the [5|5] end the synthetic-double probe
+	// missed that turn, and [6|6] becoming the spinner mid-round.
+	void TestBoardReplayFromPlacementLog()
+	{
+		const int log[][4] = {
+			{ 2, 3, -2, 1 }, { 2, 6, 2, 1 }, { 0, 3, -6, 1 }, { 6, 6, 6, 2 }, { 1, 6, 8, 1 }, { 0, 5, -10, 1 },
+			{ 1, 4, 12, 1 }, { 4, 5, 16, 1 }, { 5, 5, 17, 3 }, { 1, 5, -14, 1 }, { 0, 6, 6, -2 },
+		};
+		DominoSearch::BoardReplay replay;
+		for (const auto& r : log)
+		{
+			DominoSearch::PlacedRecord placed;
+			placed.tile = Tile{ r[0], r[1] };
+			placed.gx = r[2];
+			placed.gy = r[3];
+			replay.Apply(placed);
+		}
+		const DominoSearch::Board& b = replay.board;
+		bool open[7] = {};
+		for (int e = 0; e < b.count; e++)
+			open[b.ends[e].pip] = true;
+		if (b.spinnerLong > 0 || b.emptySides > 0)
+			open[b.spinnerPip] = true;
+		Check(replay.ok && replay.applied == 11 && DominoSearch::BoardTotal(b) == 11,
+			"placement-log replay reaches the game's own end total", "expected total 11 after 11 tiles");
+		Check(open[0] && open[1] && open[5] && open[6] && !open[2] && !open[3] && !open[4],
+			"placement-log replay finds every open end, including the [5|5] the probe missed", "expected open ends {0,1,5,6}");
+		Check(b.spinnerPip == 6 && b.emptySides == 1, "the first double becomes the spinner even mid-round", "expected spinner 6 with one unplayed side");
+	}
+
+	// Exact board in the search: every placement scores for whoever
+	// makes it, and a scoring-table opponent plays the scripted AI's
+	// choice (its highest scoring native total) instead of paranoid play.
+	void TestExactBoardSearch()
+	{
+		// Board after [5|5] opened and [0|5] went on one long side: spinner
+		// 5 with one long side open, a plain 0 end. Total 10.
+		GameState state;
+		state.rules = DominoAiPolicy::Rules::AllFives;
+		state.occupied = { true, true, false, false };
+		state.exactBoard = true;
+		state.board.placed = true;
+		state.board.spinnerPip = 5;
+		state.board.spinnerLong = 1;
+		state.board.ends[0] = { 0, false };
+		state.board.count = 1;
+		state.ends.pips[0] = 0;
+		state.ends.pips[1] = 5;
+		state.ends.count = 2;
+		state.turnSeat = 0;
+
+		// Me: [0|5] on the 0 end -> new 5 end + spinner 10 = 15, scores 15.
+		// On the spinner's long side -> two 0 ends, sides open: total 0.
+		state.hands[0][0] = Tile{0,5};
+		state.hands[0][1] = Tile{2,3};
+		state.handCounts[0] = 2;
+		state.hands[1][0] = Tile{6,6};
+		state.hands[1][1] = Tile{1,2};
+		state.handCounts[1] = 2;
+
+		DominoSearch::MoveList moves = DominoSearch::detail::LegalMoves(state, 0);
+		Check(moves.count == 2, "exact board: a tile fitting a regular end and the spinner is two moves", "expected [0|5] on 0 and on the spinner");
+
+		GameState scored = DominoSearch::detail::ApplyMove(state, 0, moves.moves[0].target == DominoSearch::kTargetSpinnerLong ? moves.moves[1] : moves.moves[0]);
+		Check(scored.roundGain[0] == 15, "exact board: a placement that makes a multiple of five scores it", "expected +15 for [0|5] on the 0 end");
+
+		// Opponent choice: plain 5 and 0 ends. [4|5] is the higher-pip tile
+		// (the Block/Draw choice), but [0|5] on the 0 end totals 10 and
+		// scores, so the All Fives AI plays that.
+		GameState npc;
+		npc.rules = DominoAiPolicy::Rules::AllFives;
+		npc.occupied = { true, true, false, false };
+		npc.exactBoard = true;
+		npc.board.placed = true;
+		npc.board.ends[0] = { 5, false };
+		npc.board.ends[1] = { 0, false };
+		npc.board.count = 2;
+		npc.turnSeat = 1;
+		npc.hands[1][0] = Tile{4,5}; // on 5 -> 4 + 0 = 4, 9 pips
+		npc.hands[1][1] = Tile{0,5}; // on 0 -> 5 + 5 = 10 (scores), on 5 -> 0 + 0 = 0
+		npc.handCounts[1] = 2;
+		npc.hands[0][0] = Tile{6,6};
+		npc.handCounts[0] = 1;
+		DominoSearch::MoveList replies = DominoSearch::detail::OpponentMoves(npc, 1);
+		bool onlyScoring = replies.count == 1 && replies.moves[0].tile == (Tile{0,5}) && replies.moves[0].endPip == 0;
+		Check(onlyScoring, "exact board: an All Fives opponent plays its scoring placement, not any legal reply",
+			"expected only [0|5] on the 0 end (total 10)");
+
+		npc.exactBoard = false;
+		npc.ends.pips[0] = 5;
+		npc.ends.pips[1] = 0;
+		npc.ends.count = 2;
+		replies = DominoSearch::detail::OpponentMoves(npc, 1);
+		Check(replies.count > 1, "without the exact board an All Fives opponent is still searched paranoidly", "expected every legal reply");
+	}
+
+	// The root scoring bonus is per END: [2|5] fits both open ends, only
+	// the end-2 placement scores. Everything else is symmetric (nobody can
+	// follow, the round blocks with equal hands either way), so the
+	// search must advise end 2 and credit exactly those 10 points.
+	void TestSearchRootBonusIsPerEnd()
+	{
+		GameState state = TwoSeatState({ Tile{2,5}, Tile{0,0} }, { Tile{6,6} }, { 2, 5 });
+		state.rules = DominoAiPolicy::Rules::AllFives;
+		state.rootMoveBonusPoints[0][2] = 10;
+		auto rec = DominoSearch::FindBestMove(state, 0, 20);
+		Check(rec.valid && rec.tile == (Tile{2,5}) && rec.endPip == 2,
+			"root scoring bonus goes to the end that scores", "expected [2|5] on end 2");
+
+		state.rootMoveBonusPoints[0][2] = 0;
+		state.rootMoveBonusPoints[0][5] = 10;
+		rec = DominoSearch::FindBestMove(state, 0, 20);
+		Check(rec.valid && rec.tile == (Tile{2,5}) && rec.endPip == 5,
+			"root scoring bonus on the other end moves the advice with it", "expected [2|5] on end 5");
 	}
 
 	void TestSearchSnapshotAndTurnHandling()
@@ -662,6 +870,140 @@ namespace
 			"points-inferior recommendation, or reported points/exactness disagree with the oracle");
 		Check(improved > 0 && drawsUsed > 0, "net-points evaluation strictly improves on the old outcome-only choice in seeded endgames",
 			"expected at least one position where the old highest-pip tiebreak leaves points on the table");
+	}
+
+	// GameRecord.h: a decision line's state and an npcMove line's
+	// candidate list must read back exactly as written, or a recorded
+	// position replays as a different position.
+	void TestGameRecordRoundTrip()
+	{
+		DominoSearch::GameState state;
+		state.rules = DominoAiPolicy::Rules::AllFives;
+		state.occupied = { true, false, true, true };
+		state.hands[0][0] = { 1, 4 };
+		state.hands[0][1] = { 6, 6 };
+		state.handCounts[0] = 2;
+		state.hands[2][0] = { 0, 0 };
+		state.handCounts[2] = 1;
+		state.hands[3][0] = { 2, 5 };
+		state.hands[3][1] = { 3, 3 };
+		state.hands[3][2] = { 0, 6 };
+		state.handCounts[3] = 3;
+		state.ends.pips[0] = 4;
+		state.ends.pips[1] = 6;
+		state.ends.count = 2;
+		state.boneyard[0] = { 1, 1 };
+		state.boneyard[1] = { 2, 3 };
+		state.boneyardCount = 2;
+		state.scores = { 40, 0, 15, 85 };
+		state.pointsTarget = 100;
+		state.rootMoveBonusPoints[1][6] = 10;
+		state.exactBoard = true;
+		state.board.placed = true;
+		state.board.ends[0] = { 4, false };
+		state.board.ends[1] = { 6, true };
+		state.board.count = 2;
+		state.board.spinnerPip = 5;
+		state.board.emptySides = 1;
+		state.turnSeat = 0;
+
+		GameRecord::JsonLine line;
+		line.Add("type", "decision");
+		GameRecord::WriteState(line, state, 0);
+		DominoSearch::GameState back;
+		int mySeat = -1;
+		Check(GameRecord::ReadState(line.Str(), back, mySeat) && mySeat == 0 && back == state,
+			"game record: decision state round-trips", line.Str().c_str());
+
+		DominoAiPolicy::Candidate candidates[] = { { 1, true, 10, 3, -2, 0 }, { 0, false, 0, 0, 0, 0 }, { 2, true, 5, -1, 4, 2 } };
+		GameRecord::JsonLine npc;
+		GameRecord::WriteCandidates(npc, candidates, 3);
+		std::vector<DominoAiPolicy::Candidate> read;
+		bool same = GameRecord::ReadCandidates(npc.Str(), read) && read.size() == 3;
+		for (std::size_t i = 0; same && i < read.size(); i++)
+			same = read[i].handIndex == candidates[i].handIndex && read[i].hasPlacement == candidates[i].hasPlacement &&
+				read[i].resultingEndTotal == candidates[i].resultingEndTotal && read[i].gridF1 == candidates[i].gridF1 &&
+				read[i].gridF2 == candidates[i].gridF2 && read[i].gridOrientation == candidates[i].gridOrientation;
+		Check(same, "game record: candidate list round-trips in native order", npc.Str().c_str());
+	}
+
+	// Replays tests/fixtures/games.jsonl -- lines copied out of the mod's
+	// DominoCheat_games.jsonl (Debug build) with an expect* key added.
+	// decision + "expectTile" (and optional "expectEnd"): FindBestMove()
+	// on the recorded position must recommend it. npcMove + "expectTile":
+	// SelectCandidate() on the recorded native candidate list must pick
+	// it. Lines without an expect* key are skipped. See GameRecord.h.
+	void TestRecordedGames()
+	{
+		std::ifstream file;
+		for (const std::filesystem::path& candidate : {
+			std::filesystem::path(__FILE__).parent_path() / "fixtures" / "games.jsonl",
+			std::filesystem::path("tests") / "fixtures" / "games.jsonl",
+			std::filesystem::path("fixtures") / "games.jsonl" })
+		{
+			file.open(candidate);
+			if (file.is_open())
+				break;
+		}
+		if (!file.is_open())
+		{
+			Check(false, "tests/fixtures/games.jsonl opens", "run from the DominoCheat directory");
+			return;
+		}
+
+		int replayed = 0;
+		std::string line;
+		while (std::getline(file, line))
+		{
+			if (line.empty() || line[0] == '#')
+				continue;
+
+			Tile expect;
+			if (!GameRecord::GetTile(line, "expectTile", expect))
+				continue;
+
+			std::string type, id, note;
+			GameRecord::GetString(line, "type", type);
+			GameRecord::GetString(line, "id", id);
+			GameRecord::GetString(line, "note", note);
+			std::string name = "recorded " + type + " " + id + (note.empty() ? "" : " (" + note + ")");
+
+			if (type == "decision")
+			{
+				DominoSearch::GameState state;
+				int mySeat = -1;
+				if (!GameRecord::ReadState(line, state, mySeat))
+				{
+					Check(false, name.c_str(), "decision line does not parse");
+					continue;
+				}
+				DominoSearch::Recommendation rec = DominoSearch::FindBestMove(state, mySeat, DominoSearch::detail::kMaxSearchDepth, 2'000'000);
+				std::int32_t expectEnd = -1;
+				bool endOk = !GameRecord::GetInt(line, "expectEnd", expectEnd) || rec.endPip == expectEnd;
+				std::string detail = "search recommends [" + std::to_string(rec.tile.low) + "|" + std::to_string(rec.tile.high) +
+					"] on end " + std::to_string(rec.endPip) + ", expected [" + std::to_string(expect.low) + "|" + std::to_string(expect.high) + "]";
+				Check(rec.valid && rec.tile == expect && endOk, name.c_str(), detail.c_str());
+				replayed++;
+			}
+			else if (type == "npcMove")
+			{
+				std::string rules;
+				std::vector<Tile> hand;
+				std::vector<DominoAiPolicy::Candidate> candidates;
+				if (!GameRecord::GetString(line, "rules", rules) || !GameRecord::GetTiles(line, "hand", hand) ||
+					!GameRecord::ReadCandidates(line, candidates))
+				{
+					Check(false, name.c_str(), "npcMove line does not parse");
+					continue;
+				}
+				int chosen = DominoAiPolicy::SelectCandidate(GameRecord::RulesFromName(rules), hand.data(), static_cast<int>(hand.size()),
+					candidates.data(), static_cast<int>(candidates.size()));
+				bool ok = chosen >= 0 && hand[static_cast<std::size_t>(candidates[static_cast<std::size_t>(chosen)].handIndex)] == expect;
+				Check(ok, name.c_str(), "scripted-AI model picks a different tile than the NPC played");
+				replayed++;
+			}
+		}
+		Check(replayed > 0, "tests/fixtures/games.jsonl has replayable lines", "no line with an expect* key");
 	}
 
 	void TestScriptedCandidateSelection()
@@ -1185,10 +1527,16 @@ int main()
 	TestSearchModelsBoneyardDraws();
 	TestSearchOpeningMove();
 	TestSearchAvoidsHandingOpponentTheGame();
+	TestSearchRootBonusIsPerEnd();
+	TestBoardRulesReplay();
+	TestBoardReplayFromPlacementLog();
+	TestExactBoardSearch();
 	TestSearchSnapshotAndTurnHandling();
 	TestSearchAgainstExhaustiveEndgames();
 	TestSearchNetPointsAgainstExhaustiveDrawEndgames();
 	TestScriptedCandidateSelection();
+	TestGameRecordRoundTrip();
+	TestRecordedGames();
 	TestScriptedSeatOrder();
 	TestPolicyRestrictionsPreserveUncertainty();
 	TestPolicyAwareEndgames();

@@ -29,6 +29,8 @@ namespace
 		g_mainMenu->AddItem(new MenuItemAction("Toggle Domino Cheat (see log)", DominoCheat::Toggle));
 		g_mainMenu->AddItem(new MenuItemAction("Probe Table Struct (see log)", DominoCheat::ProbeTableStruct));
 		g_mainMenu->AddItem(new MenuItemAction("Probe Best Move (see log)", DominoCheat::ProbeBestMove));
+		g_mainMenu->AddItem(new MenuItemAction("Probe Rules & Scores (see log)", DominoCheat::ProbeRulesAndScores));
+		g_mainMenu->AddItem(new MenuItemAction("Probe Seat Hands (see log)", DominoCheat::ProbeSeatHands));
 		g_mainMenu->AddItem(new MenuItemAction("Probe Domino Skin (see log)", DominoCheat::ProbeDominoSkin));
 		g_mainMenu->AddItem(new MenuItemAction("Dump Full Stack JSONL", DominoCheat::DumpFullStackJsonl));
 		g_mainMenu->AddItem(new MenuItemAction("Reload Config (see log)", Config::Reload));
