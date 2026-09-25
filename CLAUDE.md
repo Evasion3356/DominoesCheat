@@ -917,7 +917,17 @@ double played onto its own number was a false alarm from the post-move
 check using the open-end probe (now uses the exact board). Rule sets by
 location (RDR2 wiki): All Fives = Saint Denis, Draw = Emerald Station,
 All Threes = Blackwater. Block isn't offered anywhere. The NPC count at a
-table varies per visit. Still untested: All Threes (Blackwater, not
+table varies per visit. Two more 4-seat All Fives games (35/35 decisions,
+89/89 NPC moves, both won) checked every decision's forecast `recPoints`
+against the real score change from that decision to the round's end:
+exact, or the actual result was BETTER. How to read the verdict: it
+counts only points STILL TO COME (points already scored this round are
+banked in `scores`, not in the forecast), so "round win +10" then "tie 0"
+on the next turn is the same forecast after scoring the 10. It's a floor,
+not a prediction: when an NPC has two equally ranked placements, the
+search assumes the one worse for you. A round that ends the game records
+its scores as 0 -> 0 (the game resets them), so round lines carry
+`scoresPeak` and judge `gameOver` from it. Still untested: All Threes (Blackwater, not
 reachable yet).
 Debug writes `DominoCheat_games.jsonl` (see Tests) -- summarize it with a
 short script after a session rather than asking the player.

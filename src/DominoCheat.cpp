@@ -1701,6 +1701,7 @@ namespace DominoCheat
 			// scores seen when the table's script thread goes away.
 			bool roundValid = false;
 			std::array<std::int32_t, kMaxSeats> roundLastScores{}; // refreshed every tick
+			std::array<std::int32_t, kMaxSeats> roundPeakScores{}; // highest seen this round: the game resets scores to 0 once it's won
 			std::int32_t roundMySeat = -1;
 			DominoAiPolicy::Rules roundRules = DominoAiPolicy::Rules::Unknown;
 			std::array<bool, kMaxSeats> roundOccupied{};
@@ -3862,10 +3863,11 @@ namespace DominoCheat
 				for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
 				{
 					occ[seat] = t.roundOccupied[seat] ? 1 : 0;
-					// Scores reset after a game ends; a table exit can also
-					// catch them still at the target, before the reset.
+					// The game resets every score to 0 once someone reaches
+					// the target, so a round that started at 0 and ended the
+					// game reads 0 -> 0: judge by the highest score seen.
 					if (t.roundOccupied[seat] && (scoresNow[seat] < t.roundScoresBefore[seat] ||
-						(t.roundPointsTarget > 0 && scoresNow[seat] >= t.roundPointsTarget)))
+						(t.roundPointsTarget > 0 && t.roundPeakScores[seat] >= t.roundPointsTarget)))
 						gameOver = true;
 				}
 				line.Add("occupied", occ, static_cast<int>(kMaxSeats));
@@ -3877,6 +3879,7 @@ namespace DominoCheat
 				}
 				line.Add("scoresBefore", t.roundScoresBefore.data(), static_cast<int>(kMaxSeats))
 					.Add("scoresAfter", scoresNow.data(), static_cast<int>(kMaxSeats))
+					.Add("scoresPeak", t.roundPeakScores.data(), static_cast<int>(kMaxSeats))
 					.Add("gameOver", gameOver)
 					.Add("endedBy", endedBy)
 					.Add("pointsTarget", static_cast<std::int64_t>(t.roundPointsTarget))
@@ -3913,6 +3916,7 @@ namespace DominoCheat
 
 				t.roundValid = mySeat >= 0;
 				t.roundLastScores = scoresNow;
+				t.roundPeakScores = scoresNow;
 				t.roundMySeat = mySeat;
 				t.roundRules = ReadAiRules(thread);
 				t.roundOccupied = occupied;
@@ -3978,7 +3982,10 @@ namespace DominoCheat
 				if (g_debugTrace.roundValid)
 					for (std::uint32_t seat = 0; seat < kMaxSeats; seat++)
 						if (g_debugTrace.roundOccupied[seat])
+						{
 							g_debugTrace.roundLastScores[seat] = ReadSeatScore(thread, seat);
+							g_debugTrace.roundPeakScores[seat] = std::max(g_debugTrace.roundPeakScores[seat], g_debugTrace.roundLastScores[seat]);
+						}
 
 				if (turnSeat >= 0 && turnSeat < static_cast<std::int32_t>(kMaxSeats) && turnSeat != g_debugTrace.lastValidTurnSeat)
 				{
