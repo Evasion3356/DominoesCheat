@@ -47,11 +47,10 @@ void ScriptMain()
 	Config::Reload();
 	GamePointers::GetScriptThreads();
 
+	// Both builds start already polling; Debug's F12 menu can still toggle it.
+	DominoCheat::SetEnabled(true);
 #ifdef _DEBUG
 	BuildMenu();
-#else
-	// No menu in Release to flip this from, so start already polling.
-	DominoCheat::SetEnabled(true);
 #endif
 
 	while (true)

@@ -16,8 +16,8 @@ namespace DominoCheat
 	// "Toggle Domino Cheat" item.
 	void Toggle();
 
-	// Sets Enabled directly (idempotent, unlike Toggle()) -- Release's
-	// ScriptMain calls this instead, same reasoning as PokerCheat/
+	// Sets Enabled directly (idempotent, unlike Toggle()) -- ScriptMain
+	// calls this at startup in both builds, same reasoning as PokerCheat/
 	// BlackjackCheat's own SetEnabled (guards against ScriptHookRDR2
 	// re-entering ScriptMain and silently toggling the advisor back off).
 	void SetEnabled(bool enabled);

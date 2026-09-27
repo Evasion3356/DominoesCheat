@@ -415,9 +415,9 @@ or the copy fails with a file-in-use error -- check
 A `Debug|x64` configuration also exists (`/p:Configuration=Debug` in the
 same command) -- `/MTd` static debug CRT, optimizations disabled, PDB
 deployed alongside the `.asi`. This is also the configuration with the
-F12 test menu and the `Probe*`/`Dump*` diagnostics (see below) -- Release
-enables the advisor unconditionally with no menu at all, same convention
-as PokerCheat/BlackjackCheat.
+F12 test menu and the `Probe*`/`Dump*` diagnostics (see below). Both configurations
+enable the advisor on injection; Release simply has no menu at all, while
+Debug's F12 menu can still toggle it off/on.
 
 **F12** opens the test menu (NUMPAD 8/2 move, NUMPAD 5 select, NUMPAD
 0/Backspace/F12 back) -- chosen specifically so PokerCheat (F10),
