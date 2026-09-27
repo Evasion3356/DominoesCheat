@@ -109,7 +109,12 @@
 		is called afterward regardless of whether the wait succeeded or
 		timed out.
 
-	NOT yet live-tested (2026-09-13) -- written immediately after the
+	CONFIRMED LIVE since 2026-09-17: the worker has run every decision of
+	every live session with no freeze or frame hitch (worst frame 13.9 ms
+	on a 4-seat All Fives table). The eject/hot-reload path below has not
+	been specifically re-tested.
+
+	History (2026-09-13): written immediately after the
 	synchronous version's own live freeze, as the more robust follow-up
 	fix requested by the user rather than just tuning the existing bound.
 	The join()/wait-then-detach() split above was added the same day,

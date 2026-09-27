@@ -312,9 +312,9 @@
 	  only; DrawOverlay()/ProbeSeatHands() both now read/loop up to the
 	  new kMaxHandCapacity (19) instead, so a hand that has genuinely grown
 	  isn't silently truncated the way the original 7-tile cap would have
-	  done. NOT live-tested (no session yet has watched a hand actually
-	  grow past 7 -- both live sessions so far happened to catch hands
-	  either freshly dealt or down by exactly one already-played tile).
+	  done. CONFIRMED LIVE 2026-09-25: hands past 7 tiles read correctly
+	  (the Debug trace's per-draw CHECK lines matched the boneyard's draw
+	  order and validated every grown hand).
 
 	IMPORTANT COMPLICATION for the "board"/legal-move goal specifically:
 	func_354 (line ~14836, the function that actually COMMITS a chosen
@@ -404,11 +404,9 @@
 
 	Session 8 (2026-09-13, release-prep pass) -- four presentation
 	changes, NONE of which touch a struct offset, so none of them affect
-	the confidence ratings above; all NEW code in this pass is itself
-	NOT yet live-tested (positions in particular are placeholder guesses,
-	flagged individually below), same "implemented, not yet confirmed"
-	status DetermineBestMove()/DetermineOpenEnds() already carried into
-	this session:
+	the confidence ratings above. (Originally untested with placeholder
+	positions; CONFIRMED LIVE since -- icon sizes tuned 2026-09-13, HUD
+	layout confirmed at the current defaults 2026-09-25.) The changes:
 	  1. Font: DrawLine()'s plain UI::DRAW_TEXT/SET_TEXT_COLOR_RGBA are
 	     nullsub on this game build (1491.50) -- the exact same finding
 	     Poker/BlackjackCheat already made and documented in their own
@@ -638,7 +636,9 @@
 	   deleted the now-unreachable "ambiguous tile" special case this
 	   made unnecessary (ground truth resolves it automatically) along
 	   with RemoveOnePip()/ContainsPip(). Builds clean, tests pass.
-	   NOT yet live-tested against this specific failure mode.
+	   (Never live-tested; superseded -- this BoardTracker was removed in
+	   fix 5 below, and the 2026-09-25 exact-board BoardTracker replaced
+	   open-end tracking outright.)
 
 	4. DETERMINISTIC GHOST-POSITION FORMULA (2026-09-17, same day, per an
 	   explicit user request to stop correlating and instead reverse the
@@ -705,11 +705,8 @@
 	   coordinate for the recommended pip, logging the distance between
 	   them -- reusing BoardTracker's own proven-correct mechanism as
 	   ground truth instead of requiring a dedicated new probe. Builds
-	   clean (Debug + Release), all unit tests pass. NOT yet live-
-	   confirmed -- the very next session's log has enough data to prove
-	   or disprove this outright via the logged distances, whether or not
-	   BoardTracker's own timing/correlation happens to cooperate that
-	   session. If confirmed, this can replace BoardTracker's prop-
+	   clean (Debug + Release), all unit tests pass. (CONFIRMED -- see
+	   fix 5; the "PLAY HERE!" marker is confirmed live since.) If confirmed, this can replace BoardTracker's prop-
 	   ownership correlation entirely for world-position purposes (the
 	   OpenEnds ground-truth-resync logic from fix 3 above stays either
 	   way -- it drives the search-facing pip bookkeeping, not just the
@@ -874,7 +871,8 @@ namespace DominoCheat
 		{
 			// func_168 passes Round.f_666.f_3 to func_352; func_614 maps
 			// the scoring hashes. Plain scalar fields, no array headers.
-			// Statically traced in build 1491.50; not yet live-confirmed.
+			// Statically traced in build 1491.50; CONFIRMED LIVE 2026-09-25
+			// (Draw and All Fives tables decoded correctly).
 			return DominoAiPolicy::DecodeRules(RoundLocal(thread).At(666).At(3).AsInt32());
 		}
 	}
@@ -1792,9 +1790,10 @@ namespace DominoCheat
 		// until every one of the 7 possible pip values has been tried
 		// at least once. A hand of size N now takes ceil(7/N) native
 		// calls instead of 1 -- still cheap (at most 7, for a 1-tile
-		// hand). NOT yet live-tested (the bug above WAS caught live;
-		// this specific fix has not been re-run against a real board
-		// yet).
+		// hand). Only a fallback now: when BoardTracker has the exact
+		// board (every decision in the 2026-09-25 sessions), its open
+		// numbers replace this probe, which was also seen live to miss an
+		// end next to a [5|5] -- see CurrentOpenEnds().
 		// `verboseLog` (2026-09-16, added to chase a live discrepancy: the
 		// native's own candidate list showed pip 4 open right after an
 		// opponent played [4|4] onto an existing 4-end, while this
@@ -2396,10 +2395,10 @@ namespace DominoCheat
 		// func_22's table setup (dominoes_sp.ysc.c lines ~3446-3453) and
 		// compared against seat.f_2 by func_164/func_169 to end the game.
 		// Bracket-indexed in the decompile, so the header-word convention
-		// applies (At(0, 1)). Statically traced, NOT yet live-confirmed --
-		// which is why callers sanity-check the value and fall back to
-		// "no target" (round-only advice) rather than trusting garbage;
-		// ProbeBestMove() logs it for the live check.
+		// applies (At(0, 1)). CONFIRMED LIVE 2026-09-25 (e.g.
+		// 60 at Emerald Station Draw). Callers still sanity-check the value
+		// and fall back to "no target" (round-only advice) rather than
+		// trusting garbage.
 		constexpr std::uint32_t kRulesHolderFieldOffset = 666;
 		constexpr std::uint32_t kPointsTargetFieldOffset = 14;
 
@@ -4332,8 +4331,8 @@ namespace DominoCheat
 #endif
 
 			// Real-font HUD (Release+Debug) -- see this file's header
-			// comment's "Session 8" entry for what each piece is and why
-			// it's still flagged NOT yet live-tested.
+			// comment's "Session 8" entry for what each piece is (all
+			// CONFIRMED LIVE).
 			const Config::Values& cfg = Config::Get();
 			std::int32_t mySeat = FindMySeatByPed(thread);
 			std::int32_t turnSeat = RoundLocal(thread).At(kCurrentTurnSeatFieldOffset).AsInt32();
@@ -4415,7 +4414,7 @@ namespace DominoCheat
 						// placement as the spot being marked -- is what's
 						// actually correct regardless of what either
 						// entity's own pivot convention turns out to be.
-						// NOT yet live-tested.
+						// CONFIRMED LIVE 2026-09-17.
 						if (rec.endPip >= 0)
 						{
 							std::int32_t boardRefHandle = FindAnyBoardOwnedTilePropHandle(thread);

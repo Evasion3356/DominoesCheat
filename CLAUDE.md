@@ -7,49 +7,17 @@ see those projects' `CLAUDE.md` files for the full backstory on why this
 stack (ScriptHookRDR2 + native C++, not an injected mod-menu framework)
 was chosen.
 
-**Current status: hand/boneyard/seat chain, "my seat", and legal-move
-advice are all live-confirmed. A full blocking/win-the-round advisor and
-a real 3D world-space "PLAY THIS ONE" marker on the physical tile are
-implemented but NOT yet live-tested (2026-09-13). A same-day release-prep
-pass (Session 8 below) rebuilt the entire HUD on the same working
-`$Font5`/`UIDEBUG` font pipeline Poker/BlackjackCheat use, gave opponent
-hands their own real-font per-seat blocks, gave the blocking/win advisor
-a standalone articulated readout, and added full 13-language
-localization -- also NOT yet live-tested. A user report the same evening
-found the blocking/win advisor's recommendations were legal but still
-lost more than expected -- Session 9 below replaced its 1-ply heuristic
-with a depth-limited minimax over the fully-known hands. That FIRST
-version froze the game outright the same day (per-tick recomputation +
-no cost bound, see Session 9's own addendum) -- fixed in two escalating
-passes, first a synchronous memoization cache + a hard node budget +
-fixed-capacity arrays, then (per user request for a more robust fix) a
-full move to a background worker thread (`AsyncMoveAdvisor.h`) so
-`DetermineBestMove()` never blocks the game thread on the search at
-all. NOT yet live-tested. Two more same-evening changes ARE live-tested
-and confirmed (Session 10 below): the boneyard row now draws real tile
-icons instead of text, and a new `ProbeDominoSkin()` diagnostic
-confirmed `Scene.f_6` really is the table's `dominos_set_N` skin
-index. A later pass (2026-09-17, see `DominoCheat.cpp`'s own header
-comment's "Session 12" entries for the full detail) replaced the
-observational `BoardTracker` mechanism for the "PLAY HERE!" world-space
-board marker with a deterministic formula ported from the game's own
-ghost-preview code, then found and fixed two live bugs in it: an overly
-strict candidate-match filter that suppressed the marker entirely, and a
-Z-height bug where the underlying Scene coordinate turned out to be a
-floor/anchor reference rather than table height (fixed by reusing a real
-tile entity's own height instead). CONFIRMED LIVE now -- both
-"PLAY THIS ONE!" and "PLAY HERE!" land correctly on the physical table.
-The same pass also removed six F12 diagnostics that had been disabled
-since Session 8 for menu space and were no longer needed. The same day
-(item 11 in the numbered Session list below), a full 1v1 game against
-the scripted NPC opponent --
-heavy on boneyard draws on both sides -- gave Session 11's boneyard-draw-
-aware deep search its first live test: CONFIRMED LIVE. The search ran
-every single decision (no fallback-heuristic label ever appeared in the
-log), reported search depths in the 20s consistent with
-`DrawUntilPlayable()` correctly collapsing forced-draw plies for both
-seats, every recommended move matched what was actually played, and the
-round was won.**
+**Current status (2026-09-27): everything is CONFIRMED LIVE except All
+Threes rules (played only at Blackwater, which the player can't reach
+yet).** Confirmed: the hand/boneyard/seat chain, "my seat", legal moves,
+turn order, rules hash, points target, scores, buy-in/pot, hands past 7
+tiles, the exact board (`BoardTracker`), the scripted NPC policy, the
+deep search on its background worker (2-, 3- and 4-seat tables, Draw and
+All Fives, no frame hitches), the real-font/tile-icon HUD, and both
+world-space markers ("PLAY THIS ONE!"/"PLAY HERE!", on the advised end).
+The numbered sessions below are history -- where one says "NOT yet
+live-tested", a later session or the 2026-09-25 summary under "Next
+concrete step" settles it.
 `src/DominoCheat.cpp`'s file header comment documents every struct
 offset this mod reads, each with its own confidence rating. Sessions so
 far:
@@ -366,17 +334,9 @@ predicted board and BlackjackCheat's deck-ahead prediction both depend
 on. With all 4 seats occupied, dealing consumes the entire 28-tile set
 (4 x 7 = 28) and leaves nothing in the boneyard to predict.
 
-**Not yet done:** the legal-move advice implemented this session
-(`FindPlayableTiles()`, see Status above) tells you WHICH of your tiles
-are playable, not WHERE each one would go (which open end) -- the native
-that answers that is the placement-COMMIT one
-(`MINIGAME::_0x012027C28F421F46`), whose board-layout internals were
-decompiled (see `DominoCheat.cpp`'s "Session 3"/IDA writeup) but not
-fully mapped to specific field meanings. Also not ported: func_352/353's
-own move-preference heuristics (prefer a scoring-bonus tile) -- the
-pip-total tiebreak IS now ported (`DominoSearch.h`'s own tie-break), but
-"prefer a scoring-bonus tile" specifically needs board-layout fields
-nobody has mapped.
+Which end each tile goes on, and the scripted AI's "prefer a scoring
+placement" step, were once open problems here; both are solved now --
+see "Exact board" and "Scripted opponent policy" below.
 
 ## Coding conventions
 
@@ -496,9 +456,9 @@ match rate per rule set from `npcMove` lines.
   alone), same isolation convention as `DominoHandEval.h`, unit-tested
   in `tests/DominoHandEvalTests.cpp`. See its own file header comment
   for the full rationale (why paranoid minimax is sound specifically
-  when nothing is hidden) and explicit scope limits (board modeled as a
-  SET of open pip values, not exact end-count/topology; boneyard draws
-  not modeled at all).
+  when nothing is hidden) and scope. Boneyard draws are modeled
+  (Session 11) and the exact board (`DominoSearch::Board`) is used when
+  `BoardTracker` has it; the open-pip-set model is only the fallback.
 - `src/AsyncMoveAdvisor.h` -- generic background-worker wrapper around
   `DominoSearch::FindBestMove()`, added same day as `DominoSearch.h`
   once the synchronous version froze the game live. Templated on a
@@ -602,7 +562,7 @@ elsewhere, including shuffling and presentation).
 memory. Live snapshots read the rule from `Round.f_666.f_3`, exactly the
 chain passed to `func_352` by `func_168`. IDs: Block=-1617663169,
 Draw=-1360983891, All Threes=-382896522, All Fives=-1234859967.
-This new field read is statically traced but not yet live-confirmed.
+This field read is CONFIRMED LIVE (2026-09-25).
 
 With known hands and an empty boneyard, Block/Draw search now excludes
 lower-pip NPC replies. It still searches **all equal-ranked placements**
@@ -641,8 +601,8 @@ were live-tested 2026-09-17 in a 1v1 Draw-rules game with heavy boneyard
 consumption -- CONFIRMED LIVE (see the numbered Session list's item 11
 above). The net-points evaluation's game-outcome awareness (points
 target/score), the root scoring bonus, and the scoring-mode (All Fives/
-Threes) opponent model were not exercised by that table and remain
-untested:
+Threes) opponent model were confirmed later, on 2026-09-25 (All Fives;
+All Threes is still unplayed):
 
 - **Net-points evaluation** in the game's own payout, traced from
   `func_169`/`func_343`/`func_357`: the seat that dominoes (or, on a
@@ -718,14 +678,11 @@ between requests; it does not speculate during opponents' turns. Search
 also cooperatively cancels during worker teardown. All game-memory reads
 remain on ScriptMain; only immutable snapshots cross to the worker.
 
-The existing distinct-open-pip board approximation and scoring-variant
-limitations remain unchanged (boneyard draws themselves ARE modeled --
-see Session 11 above -- and that modeling is now live-confirmed,
-2026-09-17, 1v1 Draw rules, heavy boneyard use). Runtime presets and
-worker lifecycle have standalone regression coverage; broader live game
-testing (other seat counts, All Fives/Threes rules, the points-target/
-score reads) is still needed. Older session notes describe the
-superseded node-capped worker.
+Boneyard draws are modeled and the exact board replaces the
+distinct-open-pip approximation whenever `BoardTracker` has it. The
+worker is CONFIRMED LIVE on 2-, 3- and 4-seat tables, Draw and All Fives
+(2026-09-25); worker lifecycle also has standalone regression coverage.
+Older session notes describe the superseded node-capped worker.
 
 ## Releasing
 
@@ -799,9 +756,8 @@ CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
    4-seat tables, Draw and All Fives, with the exact board. The one
    remaining rule set is All Threes, only played at Blackwater, which
    the player can't reach yet.
-2. **Watch a hand grow past 7 tiles** (draw from the boneyard because no
-   hand tile was playable) and confirm `ProbeSeatHands()`'s widened
-   (up to 19) tile dump shows the real extra tile(s) rather than garbage.
+2. DONE (2026-09-25): hands past 7 tiles read correctly (the Debug
+   trace's draw CHECK lines validated every grown hand).
 3. DONE (2026-09-25, static trace): seat.f_1 is the seat's buy-in in
    cents (`kSeatBuyInOffset`, formerly `kSeatActiveFlagOffset`), set
    from `Round.f_666.f_6`; `SeatsHolder.f_5` is the pot. Logged by the
@@ -810,20 +766,10 @@ CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
    fallback is gone. LIVE-CONFIRMED 2026-09-17 (item 11 above, 1v1 Draw
    rules, heavy boneyard use): the search runs every decision without
    falling back, correctly collapses forced-draw plies for both seats,
-   and its recommendations held up for a full won round. Still open from
-   that pass: live-confirm the points-target/score reads (`ProbeBestMove`
-   logs them) and, the
-   biggest remaining lever, the scoring-mode opponent model -- the AI
-   prefers a scoring placement when one exists, which needs the
-   board's real end total; `LogOpponentPredictions` already logs each
-   opponent's native candidate totals, so comparing those against the
-   moves the NPCs actually make would show how often the paranoid
-   fallback is wrong. Separately, WHICH end to play a
-   legal tile on when a real board has independent same-value ends, and
-   porting func_352/353's own "prefer a scoring-bonus tile" step, both
-   still need the placement-commit native's board-layout internals
-   (partially decompiled, not fully mapped -- see "Session 3"'s IDA
-   writeup) or a second read-only query native we haven't looked for yet.
+   and its recommendations held up for a full won round. The follow-ups
+   (points target/scores, the scoring-mode opponent model, which end to
+   play on) were all CONFIRMED LIVE 2026-09-25 via the exact board --
+   see the summary below.
 5. Finish calibrating Session 8's real-font/real-icon HUD -- the
    opponent-hand tile icons (`OpponentTileIconWidth/Height/SpacingX/
    LabelOffsetX`) are DONE, user-tuned live (2026-09-13, see Status
@@ -856,7 +802,7 @@ validity check once a hand passes 7 tiles), and frame time during your
 decision window vs. the rest of the game. `grep CHECK DominoCheat.log`
 after a session.
 
-**Advised end (2026-09-25, NOT yet live-tested):** the "PLAY HERE" marker
+**Advised end (2026-09-25, CONFIRMED LIVE):** the "PLAY HERE" marker
 used the first native spot for the tile, ignoring which end the advice
 chose. `PickAdvisedCandidate()` now keeps only spots on the advised end
 (`CandidateEndPip()`: a synthetic `[e|x]`, x not open, lands on exactly

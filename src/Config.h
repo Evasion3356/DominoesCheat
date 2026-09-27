@@ -5,14 +5,11 @@
 	(why this doesn't need a worker thread, why it opens the file via a wide
 	path resolved from this DLL's own module handle).
 
-	Toggles here are intentionally minimal for this mod's first pass: the
-	struct layout DominoCheat.cpp's file header comment documents is a
-	STATIC TRACE ONLY (not yet live-confirmed against a running game, same
-	starting point BlackjackCheat had before its own Session 6), and no
-	board/turn-state struct has been traced at all yet -- so there's no
-	"best move" advice to gate a toggle on yet, unlike BlackjackCheat's
-	betting-advice/hit-stand-double toggles. Once the board is traced, add
-	toggles here the same way those did.
+	Holds the HUD/advice toggles (ShowAdvice, ShowPlayableDomino, ...),
+	the [Advisor] WallClockBudget, the Language override, and the HUD
+	positions/icon sizes, all confirmed working in game; see
+	DominoCheat.cpp's file header comment for the struct offsets behind
+	them.
 */
 
 #pragma once
