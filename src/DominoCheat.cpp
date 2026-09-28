@@ -4029,10 +4029,13 @@ namespace DominoCheat
 			// seat's via the native AI policy PredictOpponentMove() uses.
 			// Retried every tick (not just the transition above) since the
 			// async search worker may take a tick or two past the window
-			// opening to publish a result at all.
+			// opening to publish a result at all. Your own seat keeps
+			// refreshing for the whole window: the worker deepens and can
+			// change its advice, and the check must use the advice that was
+			// on screen when the tile was played, not the first one.
 			if (turnSubState == DecisionCaptureState(turnSeat == mySeat) && turnSeat >= 0 &&
 				turnSeat < static_cast<std::int32_t>(kMaxSeats) &&
-				!g_debugTrace.predictionLogged[static_cast<std::size_t>(turnSeat)])
+				(turnSeat == mySeat || !g_debugTrace.predictionLogged[static_cast<std::size_t>(turnSeat)]))
 			{
 				DebugPrediction pred;
 				if (turnSeat == mySeat)
@@ -4072,8 +4075,11 @@ namespace DominoCheat
 
 				if (pred.valid)
 				{
-					Log::Write("Trace: predicted move for seat {}{}: {}", turnSeat, (turnSeat == mySeat ? " (you)" : ""), pred.label);
-					g_debugTrace.pending[static_cast<std::size_t>(turnSeat)] = pred;
+					DebugPrediction& prev = g_debugTrace.pending[static_cast<std::size_t>(turnSeat)];
+					bool changed = !prev.valid || !(prev.tile == pred.tile) || prev.endPip != pred.endPip;
+					if (changed)
+						Log::Write("Trace: predicted move for seat {}{}: {}", turnSeat, (turnSeat == mySeat ? " (you)" : ""), pred.label);
+					prev = pred;
 					g_debugTrace.predictionLogged[static_cast<std::size_t>(turnSeat)] = true;
 				}
 			}

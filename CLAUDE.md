@@ -7,13 +7,13 @@ see those projects' `CLAUDE.md` files for the full backstory on why this
 stack (ScriptHookRDR2 + native C++, not an injected mod-menu framework)
 was chosen.
 
-**Current status (2026-09-27): everything is CONFIRMED LIVE except All
-Threes rules (played only at Blackwater, which the player can't reach
-yet).** Confirmed: the hand/boneyard/seat chain, "my seat", legal moves,
+**Current status (2026-09-27): everything is CONFIRMED LIVE, all three
+rule sets offered in game (Draw, All Fives, All Threes).** Confirmed:
+the hand/boneyard/seat chain, "my seat", legal moves,
 turn order, rules hash, points target, scores, buy-in/pot, hands past 7
 tiles, the exact board (`BoardTracker`), the scripted NPC policy, the
-deep search on its background worker (2-, 3- and 4-seat tables, Draw and
-All Fives, no frame hitches), the real-font/tile-icon HUD, and both
+deep search on its background worker (2-, 3- and 4-seat tables, Draw,
+All Fives and All Threes, no frame hitches), the real-font/tile-icon HUD, and both
 world-space markers ("PLAY THIS ONE!"/"PLAY HERE!", on the advised end).
 The numbered sessions below are history -- where one says "NOT yet
 live-tested", a later session or the 2026-09-25 summary under "Next
@@ -601,8 +601,8 @@ were live-tested 2026-09-17 in a 1v1 Draw-rules game with heavy boneyard
 consumption -- CONFIRMED LIVE (see the numbered Session list's item 11
 above). The net-points evaluation's game-outcome awareness (points
 target/score), the root scoring bonus, and the scoring-mode (All Fives/
-Threes) opponent model were confirmed later, on 2026-09-25 (All Fives;
-All Threes is still unplayed):
+Threes) opponent model were confirmed later, on 2026-09-25 (All Fives)
+and 2026-09-27 (All Threes):
 
 - **Net-points evaluation** in the game's own payout, traced from
   `func_169`/`func_343`/`func_357`: the seat that dominoes (or, on a
@@ -753,9 +753,8 @@ Both "Probe Legal Moves" and the "Turn: seat N" overlay line are now
 CONFIRMED LIVE (2026-09-13) -- see Status above. What's left:
 
 1. DONE (2026-09-25): the search is CONFIRMED LIVE on 2-, 3- and
-   4-seat tables, Draw and All Fives, with the exact board. The one
-   remaining rule set is All Threes, only played at Blackwater, which
-   the player can't reach yet.
+   4-seat tables, Draw and All Fives, with the exact board. All Threes
+   followed on 2026-09-27 (see "All Threes" below).
 2. DONE (2026-09-25): hands past 7 tiles read correctly (the Debug
    trace's draw CHECK lines validated every grown hand).
 3. DONE (2026-09-25, static trace): seat.f_1 is the seat's buy-in in
@@ -862,7 +861,7 @@ didn't (fixed, see "Scripted opponent policy"). A `wrongEnd` flag on a
 double played onto its own number was a false alarm from the post-move
 check using the open-end probe (now uses the exact board). Rule sets by
 location (RDR2 wiki): All Fives = Saint Denis, Draw = Emerald Station,
-All Threes = Blackwater. Block isn't offered anywhere. The NPC count at a
+All Threes = Blackwater (also offered at camp). Block isn't offered anywhere. The NPC count at a
 table varies per visit. Two more 4-seat All Fives games (35/35 decisions,
 89/89 NPC moves, both won) checked every decision's forecast `recPoints`
 against the real score change from that decision to the round's end:
@@ -873,8 +872,21 @@ on the next turn is the same forecast after scoring the 10. It's a floor,
 not a prediction: when an NPC has two equally ranked placements, the
 search assumes the one worse for you. A round that ends the game records
 its scores as 0 -> 0 (the game resets them), so round lines carry
-`scoresPeak` and judge `gameOver` from it. Still untested: All Threes (Blackwater, not
-reachable yet).
+`scoresPeak` and judge `gameOver` from it.
+
+**All Threes (2026-09-27, CONFIRMED LIVE)**, a 1v1 game at camp: rules
+hash -382896522 read as All Threes, points target 90, scores moved in
+multiples of 3. 20/20 decisions on the exact board, all followed, no
+wrong ends; 20/20 NPC moves predicted; every board-total and turn-order
+CHECK matched; worst frame 14.2 ms. First game won 102-33, and every
+exact forecast from 30 points on landed on exactly 102. Two more games
+the same night (26/26 decisions followed, 19/19 NPC moves) were won
+117-33 and 99-30. **Nothing is pending on this project.** Its plays are
+pinned in `tests/fixtures/games.jsonl`. The Debug trace's "seat 0
+prediction MISMATCH" lines that session were a logging bug, not an
+advice bug: the trace kept the FIRST advice the worker published, not
+the deeper one on screen when the tile was played. Fixed; your own
+seat's pending prediction now follows the advice for the whole window.
 Debug writes `DominoCheat_games.jsonl` (see Tests) -- summarize it with a
 short script after a session rather than asking the player.
 
