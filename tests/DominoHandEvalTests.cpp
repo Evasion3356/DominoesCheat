@@ -525,6 +525,51 @@ namespace
 		Check(b.spinnerPip == 6 && b.emptySides == 1, "the first double becomes the spinner even mid-round", "expected spinner 6 with one unplayed side");
 	}
 
+	// Live 2026-09-29, 4-seat Draw: the same log shape with [5|5] played
+	// mid-chain and then covered on its far side. Draw has no spinner, so
+	// the game offered only [1|2] (open ends 2 and 6) from a hand of
+	// [1|5] [0|1] [1|2] [3|5]; the old model opened [5|5]'s sides and
+	// advised [3|5] onto one.
+	void TestDrawBoardHasNoSpinner()
+	{
+		const int log[][4] = {
+			{ 0, 3, -2, 1 }, { 3, 6, -6, 1 }, { 5, 6, -10, 1 }, { 5, 5, -12, 2 }, { 4, 5, -16, 1 }, { 3, 4, -20, 1 },
+			{ 0, 4, 2, 1 }, { 3, 3, -21, -1 }, { 4, 4, 6, 2 }, { 2, 3, -20, -3 }, { 4, 6, 8, 1 }, { 6, 6, 12, 2 },
+		};
+		DominoSearch::BoardReplay replay;
+		replay.board.spinnerRule = DominoAiPolicy::HasSpinner(DominoAiPolicy::Rules::Draw);
+		for (const auto& r : log)
+		{
+			DominoSearch::PlacedRecord placed;
+			placed.tile = Tile{ r[0], r[1] };
+			placed.gx = r[2];
+			placed.gy = r[3];
+			replay.Apply(placed);
+		}
+		const DominoSearch::Board& b = replay.board;
+		Check(replay.ok && replay.applied == 12 && DominoSearch::BoardTotal(b) == 14,
+			"Draw placement-log replay reaches the game's own end total", "expected total 14 after 12 tiles");
+		Check(b.spinnerPip < 0 && b.emptySides == 0 && b.count == 2,
+			"Draw: a double is an ordinary end, never a spinner", "expected two regular ends and no spinner");
+
+		GameState state;
+		state.rules = DominoAiPolicy::Rules::Draw;
+		state.occupied = { true, true, true, true };
+		state.exactBoard = true;
+		state.board = b;
+		state.ends.pips[0] = 2;
+		state.ends.pips[1] = 6;
+		state.ends.count = 2;
+		state.turnSeat = 3;
+		const Tile mine[] = { Tile{1,5}, Tile{0,1}, Tile{1,2}, Tile{3,5} };
+		for (int i = 0; i < 4; i++)
+			state.hands[3][i] = mine[i];
+		state.handCounts[3] = 4;
+		DominoSearch::MoveList moves = DominoSearch::detail::LegalMoves(state, 3);
+		Check(moves.count == 1 && state.hands[3][moves.moves[0].handIndex] == Tile{1,2},
+			"Draw: only [1|2] is legal on ends 2 and 6", "expected exactly one legal move, [1|2]");
+	}
+
 	// Exact board in the search: every placement scores for whoever
 	// makes it, and a scoring-table opponent plays the scripted AI's
 	// choice (its highest scoring native total) instead of paranoid play.
@@ -1530,6 +1575,7 @@ int main()
 	TestSearchRootBonusIsPerEnd();
 	TestBoardRulesReplay();
 	TestBoardReplayFromPlacementLog();
+	TestDrawBoardHasNoSpinner();
 	TestExactBoardSearch();
 	TestSearchSnapshotAndTurnHandling();
 	TestSearchAgainstExhaustiveEndgames();

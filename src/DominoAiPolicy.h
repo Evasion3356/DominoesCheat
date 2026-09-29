@@ -63,6 +63,16 @@ namespace DominoAiPolicy
 		return rules == Rules::Block || rules == Rules::Draw;
 	}
 
+	// Whether the first double becomes a spinner (DominoSearch.h's EXACT
+	// BOARD section). The rule hash goes to the board native
+	// (_0x58521E6DCDE97D74), and the script groups Block with Draw
+	// (func_381). CONFIRMED LIVE 2026-09-29: on a Draw board with a mid-
+	// chain [5|5], the native offered no play onto its sides.
+	inline bool HasSpinner(Rules rules)
+	{
+		return rules != Rules::Block && rules != Rules::Draw;
+	}
+
 	// func_166: only the Block rules never touch the boneyard.
 	inline bool DrawsFromBoneyard(Rules rules)
 	{

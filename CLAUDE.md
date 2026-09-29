@@ -821,7 +821,9 @@ CONFIRMED against a live stack dump: `SeatsHolder.f_6` word 0 = end total
 `DominoSearch::BoardReplay` attaches each tile to the nearest fitting end
 on the grid; the replayed total must equal word 0 every tick or the
 exact board is dropped for the round. Works mid-round. Rules (first
-double = spinner, even mid-round -- confirmed; double end = 2x; unplayed
+double = spinner, even mid-round -- confirmed; All Fives/Threes ONLY:
+Draw has no spinner, found live 2026-09-29 when the advice put [3|5] on
+a Draw board's [5|5] side, `DominoAiPolicy::HasSpinner()`; double end = 2x; unplayed
 spinner side = 0; native f_4 quirk on spinner sides) are pinned by
 `TestBoardRulesReplay`/`TestBoardReplayFromPlacementLog`. With the exact
 board the search scores every placement and restricts All Fives/Threes

@@ -1499,6 +1499,8 @@ namespace DominoCheat
 					Log::Write("Trace: board tracker: new round");
 #endif
 				}
+				if (g_state.replay.applied == 0)
+					g_state.replay.board.spinnerRule = DominoAiPolicy::HasSpinner(ReadAiRules(thread));
 
 				while (g_state.replay.ok && g_state.replay.applied < count)
 				{

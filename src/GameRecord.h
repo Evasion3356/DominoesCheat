@@ -403,6 +403,7 @@ namespace GameRecord
 		if (GetInt(line, "passStreak", passStreak))
 			state.passStreak = passStreak;
 		state.exactBoard = ReadBoard(line, state.board);
+		state.board.spinnerRule = DominoAiPolicy::HasSpinner(state.rules);
 		return state.occupied[seat];
 	}
 

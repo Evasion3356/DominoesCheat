@@ -1,5 +1,14 @@
 # DominoCheat Changelog
 
+## [1.4.0] - 2026-09-29
+
+### Fixed
+
+- On Draw tables the advice could recommend a tile the game won't let you
+  play: after a double was played in the middle of the line and covered on
+  both sides, the mod treated its sides as open, as on All Fives/All
+  Threes. Draw has no spinner, so those sides never open.
+
 ## [1.3.0] - 2026-09-25
 
 ### Changed

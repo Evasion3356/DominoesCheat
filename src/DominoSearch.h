@@ -88,11 +88,15 @@
 	-- and exactBoard is set. Rules, confirmed against every placement of
 	a recorded 3-seat All Fives round (native end totals and score
 	changes, see tests/DominoHandEvalTests.cpp TestBoardRulesReplay):
-	  - the FIRST double played is the spinner. Its two long sides are
+	  - All Fives/All Threes only (DominoAiPolicy::HasSpinner): the
+	    FIRST double played is the spinner. Its two long sides are
 	    ends; while either is still open the spinner is worth 2x its pip
 	    in the end total (once, not per side). When both long sides are
 	    covered, its two perpendicular sides open; an unplayed side is
 	    playable but worth 0.
+	  - Draw/Block have no spinner (CONFIRMED LIVE 2026-09-29): a double
+	    is an ordinary end, and an opening double only ever exposes its
+	    two long sides (Board::spinnerRule false).
 	  - any other double at an end is worth 2x its pip; a plain end its
 	    pip. The end total is the sum.
 	  - after each placement the game recounts the total and credits
@@ -213,6 +217,10 @@ namespace DominoSearch
 		std::int8_t spinnerLong = 0;   // spinner long sides still open (0-2)
 		std::int8_t emptySides = 0;    // spinner sides open but unplayed (0-2)
 		bool placed = false;           // at least one tile on the table
+		// The rules have a spinner (DominoAiPolicy::HasSpinner). Without
+		// one, spinnerPip only ever holds an opening double's two long
+		// sides, and no side ever opens.
+		bool spinnerRule = true;
 
 		// Same position regardless of end order.
 		bool operator==(const Board& o) const
@@ -266,6 +274,7 @@ namespace DominoSearch
 		{
 			next = Board{};
 			next.placed = true;
+			next.spinnerRule = board.spinnerRule;
 			if (dbl)
 			{
 				next.spinnerPip = static_cast<std::int8_t>(tile.low);
@@ -288,14 +297,14 @@ namespace DominoSearch
 		}
 		else if (target == kTargetSpinnerLong)
 		{
-			if (--next.spinnerLong == 0)
+			if (--next.spinnerLong == 0 && next.spinnerRule)
 				next.emptySides = 2;
 		}
 		else if (target == kTargetEmptySide)
 			next.emptySides--;
 
 		const int newPip = (tile.low == endPip) ? tile.high : tile.low;
-		if (dbl && next.spinnerPip < 0)
+		if (dbl && next.spinnerPip < 0 && next.spinnerRule)
 		{
 			// The first double becomes the spinner, one long side
 			// attached, its outer long side open.
