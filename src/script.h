@@ -4,13 +4,14 @@
 // BlackjackCheat's own script.h: the common header that pulls in the
 // native/type/enum declarations plus the script registration macros.
 //
-// natives.h here is the canonical allocatr/alloc8or.re-generated header
-// (submodule external/ScriptHookSDK, not the stock 2019 SDK dump) --
-// project-specific natives missing from it get added to that header
-// directly rather than a per-project ExtraNatives.h.
+// natives.h here is generated from the allocatr/alloc8or.re native DB by
+// the fork's tools/gen_natives.py (submodule external/ScriptHookSDK, not
+// the stock 2019 SDK dump), with nothing merged in. Natives it lacks go in
+// src/ExtraNatives.h.
 #include "..\external\ScriptHookSDK\inc\natives.h"
 #include "..\external\ScriptHookSDK\inc\types.h"
 #include "..\external\ScriptHookSDK\inc\enums.h"
 #include "..\external\ScriptHookSDK\inc\main.h"
+#include "ExtraNatives.h"
 
 void ScriptMain();

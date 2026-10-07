@@ -407,7 +407,7 @@
 	the confidence ratings above. (Originally untested with placeholder
 	positions; CONFIRMED LIVE since -- icon sizes tuned 2026-09-13, HUD
 	layout confirmed at the current defaults 2026-09-25.) The changes:
-	  1. Font: DrawLine()'s plain UI::DRAW_TEXT/SET_TEXT_COLOR_RGBA are
+	  1. Font: DrawLine()'s plain HUD::_DISPLAY_TEXT/_SET_TEXT_COLOR are
 	     nullsub on this game build (1491.50) -- the exact same finding
 	     Poker/BlackjackCheat already made and documented in their own
 	     ExtraNatives.h/DrawFontTest() header comments, just never
@@ -490,7 +490,7 @@
 	     also switched to the same real-font pipeline (localized).
 	  4. Localization.h/.cpp (new files, ported from Poker/BlackjackCheat's
 	     own) cover every string the three items above draw -- auto-
-	     detected from LANGUAGE::_GET_CURRENT_LANGUAGE_ID(), overridable
+	     detected from LOCALIZATION::GET_CURRENT_LANGUAGE(), overridable
 	     via DominoCheat.ini's [General] Language key. Tile notation
 	     itself ("[3|5]") stays language-agnostic digits, same as the
 	     other two mods' own numeric HUD content.
@@ -1993,7 +1993,7 @@ namespace DominoCheat
 			for (int n = kDominoSetProbeLo; n <= kDominoSetProbeHi; n++)
 			{
 				std::string candidate = "dominos_set_" + std::to_string(n);
-				if (TEXTURE::HAS_STREAMED_TEXTURE_DICT_LOADED(const_cast<char*>(candidate.c_str())))
+				if (TXD::HAS_STREAMED_TEXTURE_DICT_LOADED(const_cast<char*>(candidate.c_str())))
 				{
 					outDict = candidate;
 					return true;
@@ -2789,7 +2789,7 @@ namespace DominoCheat
 
 		// Wraps `text` in the Scaleform rich-text tags needed to actually
 		// render through the UIDEBUG::_BG_DISPLAY_TEXT pipeline --
-		// UI::DRAW_TEXT/SET_TEXT_COLOR_RGBA (what DrawLine() below still
+		// HUD::_DISPLAY_TEXT/_SET_TEXT_COLOR (what DrawLine() below still
 		// uses) are nullsub on this game build (1491.50), the same
 		// finding Poker/BlackjackCheat already made and documented in
 		// their own ExtraNatives.h/DrawFontTest() header comments --
@@ -2851,7 +2851,7 @@ namespace DominoCheat
 		{
 			const char* formatText = BgText(text, fontSize);
 			UIDEBUG::_BG_SET_TEXT_COLOR(r, g, b, a);
-			UIDEBUG::_BG_DISPLAY_TEXT(GAMEPLAY::CREATE_STRING(10, const_cast<char*>("LITERAL_STRING"), const_cast<char*>(formatText)), x, y);
+			UIDEBUG::_BG_DISPLAY_TEXT(MISC::VAR_STRING(10, const_cast<char*>("LITERAL_STRING"), const_cast<char*>(formatText)), x, y);
 		}
 
 #ifndef _DEBUG
@@ -2862,7 +2862,7 @@ namespace DominoCheat
 #endif
 
 		// Backs ONLY the raw Debug diagnostic panel now (see
-		// DrawOverlay()) -- UI::DRAW_TEXT/SET_TEXT_COLOR_RGBA are nullsub
+		// DrawOverlay()) -- HUD::_DISPLAY_TEXT/_SET_TEXT_COLOR are nullsub
 		// in Release on this game build anyway (see BgText()'s own
 		// header comment), so this was never a real Release HUD to begin
 		// with; every user-facing element added this session uses
@@ -2875,11 +2875,11 @@ namespace DominoCheat
 #else
 			float textScale = title ? kTitleTextScale : kTextScale;
 #endif
-			UI::SET_TEXT_SCALE(0.0f, textScale);
-			UI::SET_TEXT_COLOR_RGBA(235, 222, 194, 235);
-			UI::SET_TEXT_CENTRE(0);
-			UI::SET_TEXT_DROPSHADOW(1, 0, 0, 0, 200);
-			UI::DRAW_TEXT(GAMEPLAY::CREATE_STRING(10, const_cast<char*>("LITERAL_STRING"), const_cast<char*>(text)), x, y);
+			HUD::SET_TEXT_SCALE(0.0f, textScale);
+			HUD::_SET_TEXT_COLOR(235, 222, 194, 235);
+			HUD::SET_TEXT_CENTRE(0);
+			HUD::SET_TEXT_DROPSHADOW(1, 0, 0, 0, 200);
+			HUD::_DISPLAY_TEXT(MISC::VAR_STRING(10, const_cast<char*>("LITERAL_STRING"), const_cast<char*>(text)), x, y);
 		}
 
 #ifndef _DEBUG
@@ -3077,7 +3077,7 @@ namespace DominoCheat
 			std::string dominoSetDict;
 			if (!FindLoadedDominoSetDict(dominoSetDict))
 			{
-				TEXTURE::REQUEST_STREAMED_TEXTURE_DICT(const_cast<char*>("dominos_set_1"), false);
+				TXD::REQUEST_STREAMED_TEXTURE_DICT(const_cast<char*>("dominos_set_1"), false);
 				return;
 			}
 
@@ -3155,7 +3155,7 @@ namespace DominoCheat
 			std::string dominoSetDict;
 			if (!FindLoadedDominoSetDict(dominoSetDict))
 			{
-				TEXTURE::REQUEST_STREAMED_TEXTURE_DICT(const_cast<char*>("dominos_set_1"), false);
+				TXD::REQUEST_STREAMED_TEXTURE_DICT(const_cast<char*>("dominos_set_1"), false);
 				return;
 			}
 
@@ -3318,11 +3318,11 @@ namespace DominoCheat
 		}
 
 		// Raw Debug diagnostic panel (title/turn/per-seat/boneyard, via
-		// DrawLine()'s plain UI::DRAW_TEXT pipeline) PLUS the real-font
+		// DrawLine()'s plain HUD::_DISPLAY_TEXT pipeline) PLUS the real-font
 		// Release+Debug HUD (DrawSeatHandStatus()/DrawBoneyardStatus()/
 		// DrawMoveAdviceStatus()/DrawMoveSafetyStatus(), all added this
 		// session -- see this file's header comment's "Session 8" entry).
-		// The raw panel is now genuinely Debug-only (UI::DRAW_TEXT is
+		// The raw panel is now genuinely Debug-only (HUD::_DISPLAY_TEXT is
 		// nullsub in Release regardless, see BgText()'s own header
 		// comment, so it drew nothing there anyway) -- kept for exactly
 		// the reason Poker/BlackjackCheat keep their own DrawLine()/
@@ -4230,7 +4230,7 @@ namespace DominoCheat
 			// Raw diagnostic dump -- unchanged from before this session,
 			// still the thing every Probe* menu item's own live
 			// confirmation has been checked against. Never shown in
-			// Release (DrawLine()'s UI::DRAW_TEXT is nullsub there
+			// Release (DrawLine()'s HUD::_DISPLAY_TEXT is nullsub there
 			// anyway, see BgText()'s own header comment).
 			{
 				const Config::Values& cfg = Config::Get();

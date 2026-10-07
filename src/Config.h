@@ -81,7 +81,7 @@ namespace Config
 		// blocks, move-advice readout, world-space tile markers -- see
 		// Localization.h/.cpp) shows in -- "auto" (the default) matches
 		// the game's own current UI language automatically via
-		// LANGUAGE::_GET_CURRENT_LANGUAGE_ID(), no setup needed. Set to
+		// LOCALIZATION::GET_CURRENT_LANGUAGE(), no setup needed. Set to
 		// one of en-US/fr-FR/de-DE/it-IT/es-ES/pt-BR/pl-PL/ru-RU/ko-KR/
 		// zh-TW/ja-JP/es-MX/zh-CN (the exact codes that native itself
 		// maps to) to force a specific language regardless of the game's
@@ -97,7 +97,7 @@ namespace Config
 		// TextScale/TitleTextScale (not yet calibrated against a real
 		// screen for this mod -- these are placeholder starting points).
 		// Backs the RAW debug text panel only (DrawLine()'s own
-		// UI::DRAW_TEXT pipeline, nullsub in Release -- see
+		// HUD::_DISPLAY_TEXT pipeline, nullsub in Release -- see
 		// DominoCheat.cpp's BgText() header comment).
 		float PanelX = 0.015f;
 		float PanelY = 0.30f;
