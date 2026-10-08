@@ -4654,4 +4654,15 @@ namespace DominoCheat
 		GamePointers::DumpLocalStackJsonl(thread, name.str());
 	}
 #endif
+
+	void OnProcessDetach(bool processExit)
+	{
+		if (processExit)
+		{
+			AsyncMoveAdvisorDetail::g_processTerminating.store(true);
+			return;
+		}
+		AsyncMoveAdvisorDetail::g_processDetaching.store(true);
+		PrepareForShutdown();
+	}
 }

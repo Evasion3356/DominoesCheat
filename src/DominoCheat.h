@@ -41,6 +41,13 @@ namespace DominoCheat
 	// what was leaving the .asi file locked on disk after eject.
 	void PrepareForShutdown();
 
+	// Everything DLL_PROCESS_DETACH needs, first thing in it, for any host:
+	// at process exit (non-null lpReserved) only flags the advisor so its
+	// destructor skips locking and waiting (every other thread, maybe the
+	// worker holding its mutex, is already gone); on an eject flags the
+	// detach and calls PrepareForShutdown(). See AsyncMoveAdvisor.h.
+	void OnProcessDetach(bool processExit);
+
 #ifdef _DEBUG
 	// Everything below is wired to the F12 test menu only (see
 	// script.cpp's BuildMenu(), Debug-only) -- dev-tuning/reversing tools

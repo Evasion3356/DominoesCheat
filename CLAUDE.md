@@ -457,10 +457,9 @@ host-neutral:
   sink the host sets; don't include `Log.h` from library sources
   (`LogFallback.h` is fine: it's identical in every repo).
 - The move search runs on a background worker. On `DLL_PROCESS_DETACH`
-  the host sets `AsyncMoveAdvisorDetail::g_processTerminating` (process
-  exit), or `g_processDetaching` and then calls
-  `DominoCheat::PrepareForShutdown()` (eject), exactly as `main.cpp` does,
-  so the worker stops before the module unloads.
+  the host calls `DominoCheat::OnProcessDetach(lpReserved != nullptr)`
+  first thing, as `main.cpp` does, so the worker stops before the module
+  unloads.
 - Changing the public headers breaks Rampagio's build once it moves its
   submodule pin.
 

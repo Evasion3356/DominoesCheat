@@ -8,10 +8,9 @@
 
   The host provides: logging (src/DominoCheatLog.h sink), the option values
   (Config::Mutable; the ASI's Config.cpp reads the INI into it) and
-  ScriptHookRDR2.lib. On DLL_PROCESS_DETACH the host sets
-  AsyncMoveAdvisorDetail::g_processTerminating (process exit) or
-  g_processDetaching plus DominoCheat::PrepareForShutdown() (eject), as
-  main.cpp does, so the search worker stops before the module unloads.
+  ScriptHookRDR2.lib. First thing on DLL_PROCESS_DETACH the host calls
+  DominoCheat::OnProcessDetach(lpReserved != nullptr), as main.cpp does, so
+  the search worker stops before the module unloads.
   Calls natives through external/ScriptHookSDK's headers. Script thread
   only.
 -->

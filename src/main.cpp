@@ -37,27 +37,13 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 		// dead, possibly the advisor worker while holding its mutex. Only
 		// flag it -- the advisor's destructor, which the CRT still runs after
 		// this, then skips all locking and waiting (see AsyncMoveAdvisor.h).
+		// First, before anything else here: the flags are read by
+		// AsyncMoveAdvisor's destructor in the CRT's static-destruction pass
+		// after this returns, and an eject also tells the worker to stop now,
+		// giving it the rest of this handler to exit (see DominoCheat.h).
+		DominoCheat::OnProcessDetach(lpReserved != nullptr);
 		if (lpReserved)
-		{
-			AsyncMoveAdvisorDetail::g_processTerminating.store(true);
 			break;
-		}
-		// Must be set before the rest of this case -- it's read by
-		// AsyncMoveAdvisor's destructor (see AsyncMoveAdvisor.h's own
-		// header comment) when DetermineBestMove()'s function-local
-		// static advisor is torn down later, as part of the CRT's
-		// automatic static-destruction pass that runs after this
-		// function returns.
-		AsyncMoveAdvisorDetail::g_processDetaching.store(true);
-		// Signal the advisor's worker to stop NOW, not only once its
-		// destructor fires from the CRT's later static-destruction pass
-		// (that happens after this whole function returns) -- gives the
-		// worker the entire rest of this handler (scriptUnregister()
-		// included) as extra time to actually exit before the
-		// destructor's own bounded wait begins. See DominoCheat.h's
-		// PrepareForShutdown() comment for why this matters for the
-		// .asi-locked-on-eject failure mode.
-		DominoCheat::PrepareForShutdown();
 		scriptUnregister(hInstance);
 #ifdef _DEBUG
 		keyboardHandlerUnregister(OnKeyboardMessage);
