@@ -3,7 +3,8 @@
 
 #include "GamePointers.h"
 #include "PatternScan.h"
-#include "Log.h"
+#include "DominoCheatLog.h"
+#include "LogFallback.h"
 
 #include <windows.h>
 
@@ -13,6 +14,8 @@
 #include <cstring>
 #include <cmath>
 
+namespace DominoCheat
+{
 namespace
 {
 	// HorseMenu's "ScriptThreads&RunScriptThreads" signature -- see
@@ -162,3 +165,4 @@ namespace GamePointers
 		return DumpLocalStackJsonl(thread, 0, thread->m_Context.m_StackSize, outPath);
 	}
 }
+} // namespace DominoCheat

@@ -15,12 +15,14 @@
 #include <string>
 #include <exception>
 
+namespace Config = DominoCheat::Config;
+
 namespace
 {
 	using Section = inipp::Ini<char>::Section;
 
-	Config::Values g_values;
-	bool g_loaded = false;
+	// The library's live values (DominoCheatConfig.cpp); Reload() fills them.
+	Config::Values& g_values = Config::Mutable();
 
 	// Where DominoCheat.ini is loaded from and saved to: next to the .asi, or
 	// %LOCALAPPDATA%\RDR2ASIMods\DominoCheat.ini when the game folder isn't
@@ -170,7 +172,7 @@ namespace
 	}
 }
 
-namespace Config
+namespace DominoCheat::Config
 {
 	void Reload()
 	{
@@ -187,14 +189,5 @@ namespace Config
 			Log::Write("Config::Reload -- unknown non-std exception -- keeping previous config values");
 		}
 
-		g_loaded = true;
-	}
-
-	const Values& Get()
-	{
-		if (!g_loaded)
-			Reload();
-
-		return g_values;
 	}
 }

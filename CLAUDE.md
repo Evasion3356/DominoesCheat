@@ -434,6 +434,36 @@ moves through `DominoAiPolicy::SelectCandidate()`. Format:
 `src/GameRecord.h`. Quick summaries: `jq -s` over the file, e.g. NPC
 match rate per rule set from `npcMove` lines.
 
+## Library (DominoCheatLib.vcxproj)
+
+The advisor builds as a static library, `DominoCheatLib.vcxproj`, that the ASI
+links (`ProjectReference`). `../Rampagio` pulls this repo in as a git
+submodule and links the same library, with its options as menu rows under
+Misc > Minigames, saved in `Rampagio.json`. So the library stays
+host-neutral:
+
+- Library sources: `DominoCheat.cpp`, `DominoCheatConfig.cpp`, `DominoCheatLog.cpp`, `GamePointers.cpp`, `Localization.cpp`, `PatternScan.cpp`. Everything that
+  could collide with a host is in `namespace DominoCheat`: `Config`,
+  `GamePointers`, `Localization`, `PatternScan`, and the header-only
+  `ScriptLocal`/`ScriptGlobal` (the sibling advisors have their own, with
+  different bodies). Don't add global names to library code.
+- No INI, log file or menu. `Config::Mutable()` holds the live values
+  (`DominoCheatConfig.cpp`); the ASI's `Config.cpp` (`Reload`, INI only) fills
+  them, and `tools/IniGen` builds both files. `Config::Options()` lists
+  every user-facing value with a stable id, label, description and range,
+  which Rampagio turns into rows; add new options there too, and never
+  rename an id (Rampagio saves values under it).
+- Logging goes through `DominoCheat::Log` (`src/DominoCheatLog.h`), forwarded to the
+  sink the host sets; don't include `Log.h` from library sources
+  (`LogFallback.h` is fine: it's identical in every repo).
+- The move search runs on a background worker. On `DLL_PROCESS_DETACH`
+  the host sets `AsyncMoveAdvisorDetail::g_processTerminating` (process
+  exit), or `g_processDetaching` and then calls
+  `DominoCheat::PrepareForShutdown()` (eject), exactly as `main.cpp` does,
+  so the worker stops before the module unloads.
+- Changing the public headers breaks Rampagio's build once it moves its
+  submodule pin.
+
 ## Source layout
 
 - `src/main.cpp` -- `DllMain`, registers `ScriptMain`. Vendored from

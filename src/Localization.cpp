@@ -1,11 +1,14 @@
 #include "Localization.h"
 #include "Config.h"
-#include "Log.h"
+#include "DominoCheatLog.h"
+#include "LogFallback.h"
 #include "script.h" // LOCALIZATION::GET_CURRENT_LANGUAGE() (natives.h, via script.h)
 
 #include <string>
 #include <string_view>
 
+namespace DominoCheat
+{
 namespace
 {
 	constexpr int kLanguageCount = static_cast<int>(Localization::Language::Count);
@@ -283,3 +286,4 @@ namespace Localization
 		}
 	}
 }
+} // namespace DominoCheat

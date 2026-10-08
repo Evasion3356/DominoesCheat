@@ -15,6 +15,6 @@
 
 int main()
 {
-	Config::Reload();
+	DominoCheat::Config::Reload();
 	return 0;
 }

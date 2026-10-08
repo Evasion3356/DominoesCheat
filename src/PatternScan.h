@@ -17,7 +17,7 @@
 #include <optional>
 #include <string_view>
 
-namespace PatternScan
+namespace DominoCheat::PatternScan
 {
 	// Scans the main module's (RDR2.exe's) full mapped image for the given
 	// pattern. Returns the address of the first match, or nullopt.

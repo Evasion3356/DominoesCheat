@@ -804,7 +804,7 @@
 #include "DominoHandEval.h"
 #include "DominoSearch.h"
 #include "AsyncMoveAdvisor.h"
-#include "Log.h"
+#include "DominoCheatLog.h"
 #include "GamePointers.h"
 #include "ScriptLocal.h"
 #include "Config.h"

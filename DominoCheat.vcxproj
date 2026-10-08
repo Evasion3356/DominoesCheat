@@ -24,31 +24,21 @@
     <ClCompile Include="src\scriptmenu.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
     </ClCompile>
-    <ClCompile Include="src\DominoCheat.cpp" />
-    <ClCompile Include="src\PatternScan.cpp" />
-    <ClCompile Include="src\GamePointers.cpp" />
     <ClCompile Include="src\Config.cpp" />
-    <ClCompile Include="src\Localization.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="external\ScriptHookSDK\inc\main.h" />
     <ClInclude Include="external\ScriptHookSDK\inc\enums.h" />
     <ClInclude Include="external\ScriptHookSDK\inc\natives.h" />
     <ClInclude Include="external\ScriptHookSDK\inc\types.h" />
-    <ClInclude Include="src\DominoAiPolicy.h" />
-    <ClInclude Include="src\GameRecord.h" />
     <ClInclude Include="src\keyboard.h" />
     <ClInclude Include="src\script.h" />
     <ClInclude Include="src\scriptmenu.h" />
     <ClInclude Include="src\Log.h" />
-    <ClInclude Include="src\ExtraNatives.h" />
+    <ClInclude Include="src\DominoCheatLog.h" />
     <ClInclude Include="src\DominoCheat.h" />
-    <ClInclude Include="src\DominoHandEval.h" />
-    <ClInclude Include="src\DominoSearch.h" />
     <ClInclude Include="src\AsyncMoveAdvisor.h" />
-    <ClInclude Include="src\PatternScan.h" />
     <ClInclude Include="src\GamePointers.h" />
-    <ClInclude Include="src\ScriptLocal.h" />
     <ClInclude Include="src\Config.h" />
     <ClInclude Include="src\Localization.h" />
     <ClInclude Include="external\RDR-Classes\script\scrThread.hpp" />
@@ -63,6 +53,12 @@
   </ItemGroup>
   <ItemGroup>
     <None Include=".github\copilot-instructions.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The advisor itself; Rampagio links the same library. -->
+    <ProjectReference Include="DominoCheatLib.vcxproj">
+      <Project>{B7E3C5A9-6D12-4B8F-9A47-1C5E8F2D6B94}</Project>
+    </ProjectReference>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{4B1A6E3D-8F2C-4A75-B3D6-1E9C5A7F2B84}</ProjectGuid>

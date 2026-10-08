@@ -51,6 +51,8 @@
 
 #include <cstdint>
 #include <cstring>
+namespace DominoCheat
+{
 
 class ScriptLocal
 {
@@ -107,3 +109,4 @@ public:
 		return value;
 	}
 };
+} // namespace DominoCheat

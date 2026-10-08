@@ -14,9 +14,10 @@
 
 #pragma once
 
+#include <span>
 #include <string>
 
-namespace Config
+namespace DominoCheat::Config
 {
 	// [Advisor] WallClockBudget=0 (or any negative value): no deadline --
 	// the worker deepens until the position is solved or the decision is
@@ -193,6 +194,29 @@ namespace Config
 	// Returns the current config, triggering the very first load
 	// automatically on first call.
 	const Values& Get();
+
+	// One user-facing option, for a host that builds its own menu rows from
+	// them (Rampagio) instead of reading the INI. `id` is stable: hosts save
+	// the value under it, so never rename one. `value` points into Mutable()
+	// (a bool*, int* or float*, per `kind`); a host writes it directly.
+	struct Option
+	{
+		enum class Kind { Bool, Int, Float };
+		const char* id;
+		const char* section; // groups rows; Debug-only layout tuning is "HUD Layout"
+		const char* label;
+		const char* description;
+		Kind kind;
+		void* value;
+		float min = 0.0f;
+		float max = 0.0f;
+		float step = 0.0f;
+	};
+
+	// The values the library reads. The ASI's Reload() fills them from the
+	// INI; a host without one writes them through Mutable() or Options().
+	Values& Mutable();
+	std::span<const Option> Options();
 
 	// Re-reads DominoCheat.ini from disk, replacing the cached values.
 	// Wired to the F12 menu's "Reload Config" item; also called once,

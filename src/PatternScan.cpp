@@ -10,6 +10,8 @@
 #include <string>
 #include <cstring>
 
+namespace DominoCheat
+{
 namespace
 {
 	struct ParsedPattern
@@ -126,3 +128,4 @@ namespace PatternScan
 		return operandAddr + sizeof(std::int32_t) + displacement;
 	}
 }
+} // namespace DominoCheat

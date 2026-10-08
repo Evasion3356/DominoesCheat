@@ -13,9 +13,12 @@
 
 #include "scriptmenu.h" // pulls in script.h (natives/types/enums/main) and keyboard.h
 #include "Log.h"
+#include "DominoCheatLog.h"
 #include "DominoCheat.h"
 #include "Config.h"
 #include "GamePointers.h"
+
+namespace Config = DominoCheat::Config;
 
 namespace
 {
@@ -41,11 +44,12 @@ namespace
 
 void ScriptMain()
 {
+	DominoCheat::Log::SetSink([](std::string_view line) { Log::Write("{}", line); });
 	Log::Write("DominoCheat started");
 
 	// Startup work that used to live in DllMain -- see main.cpp for why.
 	Config::Reload();
-	GamePointers::GetScriptThreads();
+	DominoCheat::GamePointers::GetScriptThreads();
 
 	// Both builds start already polling; Debug's F12 menu can still toggle it.
 	DominoCheat::SetEnabled(true);

@@ -31,6 +31,8 @@
 #include <thread>
 #include <vector>
 
+namespace Config = DominoCheat::Config;
+
 namespace
 {
 	using DominoHandEval::Tile;

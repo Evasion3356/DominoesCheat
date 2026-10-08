@@ -45,7 +45,7 @@
 #include <cstdint>
 #include <string_view>
 
-namespace Localization
+namespace DominoCheat::Localization
 {
 	// Matches LOCALIZATION::GET_CURRENT_LANGUAGE()'s own return value
 	// mapping exactly -- same enum PokerCheat's/BlackjackCheat's own
